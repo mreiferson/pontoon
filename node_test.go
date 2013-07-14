@@ -13,9 +13,10 @@ func gimmeNodes(num int) []*Node {
 	var nodes []*Node
 
 	for i := 0; i < num; i++ {
-		node := NewNode(fmt.Sprintf("%d", i))
+		transport := &HTTPTransport{Address: "127.0.0.1:0"}
+		node := NewNode(fmt.Sprintf("%d", i), transport)
 		nodes = append(nodes, node)
-		nodes[i].Serve("127.0.0.1:0")
+		nodes[i].Start()
 	}
 
 	// let them start serving
@@ -24,7 +25,7 @@ func gimmeNodes(num int) []*Node {
 	for i := 0; i < len(nodes); i++ {
 		for j := 0; j < len(nodes); j++ {
 			if j != i {
-				nodes[i].AddToCluster(nodes[j].httpListener.Addr().String())
+				nodes[i].AddToCluster(nodes[j].Transport.String())
 			}
 		}
 	}

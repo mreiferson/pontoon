@@ -1,12 +1,8 @@
 package pontoon
 
 import (
-	"fmt"
 	"log"
 	"math/rand"
-	"net"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -16,6 +12,14 @@ const (
 	Candidate
 	Leader
 )
+
+type Transporter interface {
+	Serve(node *Node) error
+	Close() error
+	String() string
+	RequestVoteRPC(address string, voteRequest VoteRequest) (VoteResponse, error)
+	AppendEntriesRPC(address string, entryRequest EntryRequest) (EntryResponse, error)
+}
 
 type Node struct {
 	sync.RWMutex
@@ -28,8 +32,7 @@ type Node struct {
 	Votes        int
 	Log          *Log
 	Cluster      []string
-
-	httpListener net.Listener
+	Transport    Transporter
 
 	exitChan         chan int
 	voteResponseChan chan VoteResponse
@@ -44,10 +47,11 @@ type Node struct {
 	finishedElectionChan chan int
 }
 
-func NewNode(id string) *Node {
+func NewNode(id string, transport Transporter) *Node {
 	node := &Node{
-		ID:  id,
-		Log: &Log{},
+		ID:        id,
+		Log:       &Log{},
+		Transport: transport,
 
 		exitChan:         make(chan int),
 		voteResponseChan: make(chan VoteResponse),
@@ -63,34 +67,16 @@ func NewNode(id string) *Node {
 	return node
 }
 
+func (n *Node) Start() error {
+	return n.Transport.Serve(n)
+}
+
 func (n *Node) Exit() error {
-	return n.httpListener.Close()
+	return n.Transport.Close()
 }
 
 func (n *Node) AddToCluster(member string) {
 	n.Cluster = append(n.Cluster, member)
-}
-
-func (n *Node) Serve(address string) {
-	httpListener, err := net.Listen("tcp", address)
-	if err != nil {
-		log.Fatalf("FATAL: listen (%s) failed - %s", address, err.Error())
-	}
-	n.httpListener = httpListener
-
-	server := &http.Server{
-		Handler: n,
-	}
-	go func() {
-		log.Printf("[%s] starting HTTP server", n.ID)
-		err := server.Serve(httpListener)
-		// theres no direct way to detect this error because it is not exposed
-		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-			log.Printf("ERROR: http.Serve() - %s", err.Error())
-		}
-		close(n.exitChan)
-		log.Printf("[%s] exiting Serve()", n.ID)
-	}()
 }
 
 func (n *Node) StateMachine() {
@@ -138,11 +124,6 @@ exit:
 func (n *Node) SetTerm(term int64) {
 	n.Lock()
 	defer n.Unlock()
-
-	if n.State == Candidate && n.endElectionChan != nil {
-		// we discovered a new term in the current election, end it
-		n.EndElection()
-	}
 
 	// check freshness
 	if term <= n.Term {
@@ -201,6 +182,7 @@ func (n *Node) VoteResponse(vresp VoteResponse) {
 	if vresp.Term != n.ElectionTerm {
 		if vresp.Term > n.ElectionTerm {
 			// we discovered a higher term
+			n.EndElection()
 			n.SetTerm(vresp.Term)
 		}
 		return
@@ -228,6 +210,9 @@ func (n *Node) VoteGranted() {
 }
 
 func (n *Node) EndElection() {
+	if n.State != Candidate || n.endElectionChan == nil {
+		return
+	}
 	log.Printf("[%s] EndElection()", n.ID)
 	close(n.endElectionChan)
 	<-n.finishedElectionChan
@@ -257,11 +242,17 @@ func (n *Node) RunForLeader() {
 }
 
 func (n *Node) GatherVotes() {
+	vreq := VoteRequest{
+		Term:         n.Term,
+		CandidateID:  n.Transport.String(),
+		LastLogIndex: n.Log.Index,
+		LastLogTerm:  n.Log.Term,
+	}
 	for _, peer := range n.Cluster {
 		go func(p string) {
-			vresp, err := n.SendVoteRequest(p)
+			vresp, err := n.Transport.RequestVoteRPC(p, vreq)
 			if err != nil {
-				log.Printf("[%s] error in SendVoteRequest() to %s - %s", n.ID, p, err.Error())
+				log.Printf("[%s] error in RequestVoteRPC() to %s - %s", n.ID, p, err.Error())
 				return
 			}
 			n.voteResponseChan <- vresp
@@ -274,28 +265,6 @@ func (n *Node) GatherVotes() {
 	close(n.finishedElectionChan)
 }
 
-func (n *Node) SendVoteRequest(peer string) (VoteResponse, error) {
-	endpoint := fmt.Sprintf("http://%s/request_vote", peer)
-	vreq := VoteRequest{
-		Term:         n.Term,
-		CandidateID:  n.httpListener.Addr().String(),
-		LastLogIndex: n.Log.Index,
-		LastLogTerm:  n.Log.Term,
-	}
-	log.Printf("[%s] VoteRequest %+v to %s", n.ID, vreq, endpoint)
-	data, err := ApiRequest("POST", endpoint, vreq, 100*time.Millisecond)
-	if err != nil {
-		return VoteResponse{}, err
-	}
-	term, _ := data.Get("term").Int64()
-	voteGranted, _ := data.Get("vote_granted").Bool()
-	vresp := VoteResponse{
-		Term:        term,
-		VoteGranted: voteGranted,
-	}
-	return vresp, nil
-}
-
 func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 	log.Printf("[%s] doRequestVote() %+v", n.ID, vr)
 
@@ -304,6 +273,7 @@ func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 	}
 
 	if vr.Term > n.Term {
+		n.EndElection()
 		n.SetTerm(vr.Term)
 	}
 
@@ -331,9 +301,7 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 		return EntryResponse{Term: n.Term, Success: false}, nil
 	}
 	if n.State != Follower {
-		if n.State == Candidate && n.endElectionChan != nil {
-			n.EndElection()
-		}
+		n.EndElection()
 		n.StepDown()
 	}
 	return EntryResponse{Term: n.Term, Success: true}, nil
@@ -347,22 +315,18 @@ func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
 func (n *Node) SendHeartbeat() {
 	n.RLock()
 	state := n.State
-	term := n.Term
+	er := EntryRequest{
+		Term: n.Term,
+	}
 	n.RUnlock()
 
 	if state == Leader {
 		log.Printf("[%s] SendHeartbeat()", n.ID)
-
 		for _, peer := range n.Cluster {
 			go func(p string) {
-				endpoint := fmt.Sprintf("http://%s/append_entries", p)
-				er := EntryRequest{
-					Term: term,
-				}
-				log.Printf("[%s] AppendEntries %+v to %s", n.ID, er, endpoint)
-				_, err := ApiRequest("POST", endpoint, er, 500*time.Millisecond)
+				_, err := n.Transport.AppendEntriesRPC(p, er)
 				if err != nil {
-					log.Printf("ERROR: %s - %s", endpoint, err.Error())
+					log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, p, err.Error())
 					return
 				}
 			}(peer)
