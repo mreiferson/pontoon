@@ -109,6 +109,9 @@ func (n *Node) StateMachine() {
 
 		select {
 		case <-n.exitChan:
+			if n.State != Follower {
+				n.StepDown()
+			}
 			goto exit
 		case vreq := <-n.requestVoteChan:
 			vresp, _ := n.doRequestVote(vreq)
@@ -144,7 +147,7 @@ func (n *Node) StateMachine() {
 	}
 
 exit:
-	log.Printf("[%s] starting StateMachine()", n.ID)
+	log.Printf("[%s] exiting StateMachine()", n.ID)
 }
 
 func (n *Node) SetTerm(term int64) {
