@@ -149,15 +149,18 @@ func (n *Node) SetTerm(term int64) {
 	}
 
 	n.Term = term
-	n.State = Follower
-	n.VotedFor = ""
-	n.Votes = 0
+	n.StepDown()
 }
 
 func (n *Node) NextTerm() {
 	n.Lock()
 	defer n.Unlock()
 	n.Term++
+	n.StepDown()
+}
+
+func (n *Node) StepDown() {
+	log.Printf("[%s] StepDown()", n.ID)
 	n.State = Follower
 	n.VotedFor = ""
 	n.Votes = 0
@@ -293,6 +296,7 @@ func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 	}
 
 	// TODO: check log
+	log.Printf("[%s] granting vote to %s", n.ID, vr.CandidateID)
 	n.VotedFor = vr.CandidateID
 	return VoteResponse{n.Term, true}, nil
 }
@@ -304,6 +308,9 @@ func (n *Node) RequestVote(vr VoteRequest) (VoteResponse, error) {
 
 func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 	// TODO: check if we're a candidate and end the election (someone else became leader)
+	if n.State != Follower {
+		n.StepDown()
+	}
 	return EntryResponse{}, nil
 }
 
@@ -317,7 +324,20 @@ func (n *Node) SendHeartbeat() {
 	state := n.State
 	n.RUnlock()
 
+	log.Printf("[%s] SendHeartbeat()", n.ID)
+
 	if state == Leader {
-		// TODO: send heartbeats
+		for _, peer := range n.Cluster {
+			go func(p string) {
+				endpoint := fmt.Sprintf("http://%s/append_entries", p)
+				er := EntryRequest{}
+				log.Printf("[%s] AppendEntries %+v to %s", n.ID, er, endpoint)
+				_, err := ApiRequest("POST", endpoint, er, 500*time.Millisecond)
+				if err != nil {
+					log.Printf("ERROR: %s - %s", endpoint, err.Error())
+					return
+				}
+			}(peer)
+		}
 	}
 }

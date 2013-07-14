@@ -32,24 +32,29 @@ func TestStartup(t *testing.T) {
 	node3.AddToCluster(node2.httpListener.Addr().String())
 
 	for {
+		time.Sleep(100 * time.Millisecond)
+
+		leaders := 0
 		node1.RLock()
 		if node1.State == Leader {
-			break
+			leaders++
 		}
 		node1.RUnlock()
 
 		node2.RLock()
 		if node2.State == Leader {
-			break
+			leaders++
 		}
 		node2.RUnlock()
 
 		node3.RLock()
 		if node3.State == Leader {
-			break
+			leaders++
 		}
 		node3.RUnlock()
 
-		time.Sleep(10 * time.Millisecond)
+		if leaders == 1 {
+			break
+		}
 	}
 }
