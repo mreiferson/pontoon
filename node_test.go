@@ -91,7 +91,7 @@ func TestNodeKill(t *testing.T) {
 
 	leader := findLeader(nodes)
 	leader.Exit()
-	
+
 	for {
 		time.Sleep(50 * time.Millisecond)
 		if countLeaders(nodes) == 1 {

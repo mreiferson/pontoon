@@ -90,7 +90,7 @@ func (n *Node) Serve(address string) {
 		}
 
 		close(n.exitChan)
-		log.Printf("exiting Serve()")
+		log.Printf("[%s] exiting Serve()", n.ID)
 	}()
 }
 
@@ -109,9 +109,7 @@ func (n *Node) StateMachine() {
 
 		select {
 		case <-n.exitChan:
-			if n.State != Follower {
-				n.StepDown()
-			}
+			n.StepDown()
 			goto exit
 		case vreq := <-n.requestVoteChan:
 			vresp, _ := n.doRequestVote(vreq)
@@ -120,21 +118,9 @@ func (n *Node) StateMachine() {
 			eresp, _ := n.doAppendEntries(ereq)
 			n.appendEntriesResponseChan <- eresp
 		case <-electionTimer.C:
-			if n.State == Follower {
-				n.ElectionTimeout()
-			}
+			n.ElectionTimeout()
 		case vresp := <-n.voteResponseChan:
-			if n.State != Candidate {
-				continue
-			}
-			if vresp.Term != n.ElectionTerm {
-				if vresp.Term > n.ElectionTerm {
-					// we discovered a higher term
-					n.SetTerm(vresp.Term)
-				}
-			} else if vresp.VoteGranted {
-				n.VoteGranted()
-			}
+			n.VoteResponse(vresp)
 		case <-heartbeatTimer.C:
 			n.SendHeartbeat()
 			continue
@@ -183,6 +169,9 @@ func (n *Node) NextTerm() {
 func (n *Node) StepDown() {
 	n.Lock()
 	defer n.Unlock()
+	if n.State == Follower {
+		return
+	}
 	log.Printf("[%s] StepDown()", n.ID)
 	n.State = Follower
 	n.VotedFor = ""
@@ -197,9 +186,30 @@ func (n *Node) PromoteToLeader() {
 }
 
 func (n *Node) ElectionTimeout() {
+	if n.State == Leader {
+		return
+	}
 	log.Printf("[%s] ElectionTimeout()", n.ID)
 	n.NextTerm()
 	n.RunForLeader()
+}
+
+func (n *Node) VoteResponse(vresp VoteResponse) {
+	if n.State != Candidate {
+		return
+	}
+
+	if vresp.Term != n.ElectionTerm {
+		if vresp.Term > n.ElectionTerm {
+			// we discovered a higher term
+			n.SetTerm(vresp.Term)
+		}
+		return
+	}
+
+	if vresp.VoteGranted {
+		n.VoteGranted()
+	}
 }
 
 func (n *Node) VoteGranted() {
