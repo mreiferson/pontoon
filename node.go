@@ -3,6 +3,7 @@ package pontoon
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"strings"
@@ -19,19 +20,19 @@ const (
 type Node struct {
 	sync.RWMutex
 
-	ID       string
-	State    int
-	Term     int64
-	VotedFor string
-	Log      *Log
-	Votes    int
-	Cluster  []string
+	ID           string
+	State        int
+	Term         int64
+	ElectionTerm int64
+	VotedFor     string
+	Votes        int
+	Log          *Log
+	Cluster      []string
 
 	httpListener net.Listener
 
 	exitChan         chan int
-	voteResponseChan chan int
-	termDiscoverChan chan int64
+	voteResponseChan chan VoteResponse
 
 	requestVoteChan         chan VoteRequest
 	requestVoteResponseChan chan VoteResponse
@@ -49,8 +50,7 @@ func NewNode(id string) *Node {
 		Log: &Log{},
 
 		exitChan:         make(chan int),
-		voteResponseChan: make(chan int),
-		termDiscoverChan: make(chan int64),
+		voteResponseChan: make(chan VoteResponse),
 
 		requestVoteChan:         make(chan VoteRequest),
 		requestVoteResponseChan: make(chan VoteResponse),
@@ -59,6 +59,7 @@ func NewNode(id string) *Node {
 		appendEntriesResponseChan: make(chan EntryResponse),
 	}
 	go node.StateMachine()
+	rand.Seed(time.Now().UnixNano())
 	return node
 }
 
@@ -97,19 +98,18 @@ func (n *Node) StateMachine() {
 	log.Printf("[%s] starting StateMachine()", n.ID)
 
 	electionTimeout := 500 * time.Millisecond
-	electionTimer := time.NewTimer(electionTimeout)
+	randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))
+	electionTimer := time.NewTimer(randElectionTimeout)
+
 	heartbeatInterval := 100 * time.Millisecond
 	heartbeatTimer := time.NewTicker(heartbeatInterval)
 
 	for {
-		log.Printf("[%s] StateMachine() loop", n.ID)
+		// log.Printf("[%s] StateMachine() loop", n.ID)
 
 		select {
 		case <-n.exitChan:
 			goto exit
-		case newTerm := <-n.termDiscoverChan:
-			n.SetTerm(newTerm)
-			continue
 		case vreq := <-n.requestVoteChan:
 			vresp, _ := n.doRequestVote(vreq)
 			n.requestVoteResponseChan <- vresp
@@ -117,16 +117,29 @@ func (n *Node) StateMachine() {
 			eresp, _ := n.doAppendEntries(ereq)
 			n.appendEntriesResponseChan <- eresp
 		case <-electionTimer.C:
-			n.ElectionTimeout()
-		case <-n.voteResponseChan:
-			n.VoteGranted()
+			if n.State == Follower {
+				n.ElectionTimeout()
+			}
+		case vresp := <-n.voteResponseChan:
+			if n.State != Candidate {
+				continue
+			}
+			if vresp.Term != n.ElectionTerm {
+				if vresp.Term > n.ElectionTerm {
+					// we discovered a higher term
+					n.SetTerm(vresp.Term)
+				}
+			} else if vresp.VoteGranted {
+				n.VoteGranted()
+			}
 		case <-heartbeatTimer.C:
 			n.SendHeartbeat()
 			continue
 		}
 
-		if !electionTimer.Reset(electionTimeout) {
-			electionTimer = time.NewTimer(electionTimeout)
+		randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))
+		if !electionTimer.Reset(randElectionTimeout) {
+			electionTimer = time.NewTimer(randElectionTimeout)
 		}
 	}
 
@@ -149,17 +162,24 @@ func (n *Node) SetTerm(term int64) {
 	}
 
 	n.Term = term
-	n.StepDown()
+	n.State = Follower
+	n.VotedFor = ""
+	n.Votes = 0
 }
 
 func (n *Node) NextTerm() {
 	n.Lock()
 	defer n.Unlock()
+	log.Printf("[%s] NextTerm()", n.ID)
 	n.Term++
-	n.StepDown()
+	n.State = Follower
+	n.VotedFor = ""
+	n.Votes = 0
 }
 
 func (n *Node) StepDown() {
+	n.Lock()
+	defer n.Unlock()
 	log.Printf("[%s] StepDown()", n.ID)
 	n.State = Follower
 	n.VotedFor = ""
@@ -216,67 +236,53 @@ func (n *Node) RunForLeader() {
 	n.Lock()
 	n.State = Candidate
 	n.Votes++
-	electionTerm := n.Term
+	n.ElectionTerm = n.Term
 	n.endElectionChan = make(chan int)
 	n.finishedElectionChan = make(chan int)
 	n.Unlock()
 
 	go func() {
 		for {
-			voteResponseChan := make(chan *VoteResponse, len(n.Cluster))
 			for _, peer := range n.Cluster {
 				go func(p string) {
-					voteResponseChan <- n.SendVoteRequest(p)
+					vresp, err := n.SendVoteRequest(p)
+					if err != nil {
+						log.Printf("[%s] error in SendVoteRequest() to %x - %s", n.ID, p, err.Error())
+						return
+					}
+					n.voteResponseChan <- vresp
 				}(peer)
 			}
 
-			for {
-				select {
-				case resp := <-voteResponseChan:
-					if resp == nil {
-						// TODO: should be retrying these
-						continue
-					}
-					if resp.Term != electionTerm {
-						if resp.Term > electionTerm {
-							// we discovered a higher term
-							n.termDiscoverChan <- resp.Term
-							continue
-						}
-						continue
-					}
-					if resp.VoteGranted {
-						n.voteResponseChan <- 1
-					}
-				case <-n.endElectionChan:
-					close(n.finishedElectionChan)
-					return
-				}
-			}
+			// TODO: retry failed requests
+
+			<-n.endElectionChan
+			close(n.finishedElectionChan)
+			return
 		}
 	}()
 }
 
-func (n *Node) SendVoteRequest(peer string) *VoteResponse {
+func (n *Node) SendVoteRequest(peer string) (VoteResponse, error) {
 	endpoint := fmt.Sprintf("http://%s/request_vote", peer)
-	vr := VoteRequest{
+	vreq := VoteRequest{
 		Term:         n.Term,
 		CandidateID:  n.httpListener.Addr().String(),
 		LastLogIndex: n.Log.Index,
 		LastLogTerm:  n.Log.Term,
 	}
-	log.Printf("[%s] VoteRequest %+v to %s", n.ID, vr, endpoint)
-	data, err := ApiRequest("POST", endpoint, vr, 100*time.Millisecond)
+	log.Printf("[%s] VoteRequest %+v to %s", n.ID, vreq, endpoint)
+	data, err := ApiRequest("POST", endpoint, vreq, 100*time.Millisecond)
 	if err != nil {
-		log.Printf("ERROR: %s - %s", endpoint, err.Error())
-		return nil
+		return VoteResponse{}, err
 	}
 	term, _ := data.Get("term").Int64()
 	voteGranted, _ := data.Get("vote_granted").Bool()
-	return &VoteResponse{
+	vresp := VoteResponse{
 		Term:        term,
 		VoteGranted: voteGranted,
 	}
+	return vresp, nil
 }
 
 func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
@@ -288,7 +294,6 @@ func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 
 	if vr.Term > n.Term {
 		n.SetTerm(vr.Term)
-		return VoteResponse{n.Term, false}, nil
 	}
 
 	if n.VotedFor != "" && n.VotedFor != vr.CandidateID {
@@ -307,11 +312,16 @@ func (n *Node) RequestVote(vr VoteRequest) (VoteResponse, error) {
 }
 
 func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
-	// TODO: check if we're a candidate and end the election (someone else became leader)
+	if er.Term < n.Term {
+		return EntryResponse{Term: n.Term, Success: false}, nil
+	}
 	if n.State != Follower {
+		if n.State == Candidate && n.endElectionChan != nil {
+			n.EndElection()
+		}
 		n.StepDown()
 	}
-	return EntryResponse{}, nil
+	return EntryResponse{Term: n.Term, Success: true}, nil
 }
 
 func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
@@ -322,15 +332,18 @@ func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
 func (n *Node) SendHeartbeat() {
 	n.RLock()
 	state := n.State
+	term := n.Term
 	n.RUnlock()
 
-	log.Printf("[%s] SendHeartbeat()", n.ID)
-
 	if state == Leader {
+		log.Printf("[%s] SendHeartbeat()", n.ID)
+
 		for _, peer := range n.Cluster {
 			go func(p string) {
 				endpoint := fmt.Sprintf("http://%s/append_entries", p)
-				er := EntryRequest{}
+				er := EntryRequest{
+					Term: term,
+				}
 				log.Printf("[%s] AppendEntries %+v to %s", n.ID, er, endpoint)
 				_, err := ApiRequest("POST", endpoint, er, 500*time.Millisecond)
 				if err != nil {

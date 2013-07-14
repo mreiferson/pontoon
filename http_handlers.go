@@ -79,9 +79,12 @@ func (n *Node) requestVoteHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 type EntryRequest struct {
+	Term int64 `json:"term"`
 }
 
 type EntryResponse struct {
+	Term    int64 `json:"term"`
+	Success bool  `json:"success"`
 }
 
 func (n *Node) appendEntriesHandler(w http.ResponseWriter, req *http.Request) {
