@@ -123,14 +123,14 @@ func (n *Node) SetTerm(term int64) {
 	n.Lock()
 	defer n.Unlock()
 
-	// check freshness
-	if term <= n.Term {
-		return
-	}
-
 	if n.State == Candidate && n.endElectionChan != nil {
 		// we discovered a new term in the current election, end it
 		n.EndElection()
+	}
+
+	// check freshness
+	if term <= n.Term {
+		return
 	}
 
 	n.Term = term
@@ -201,7 +201,7 @@ func (n *Node) RunForLeader() {
 			voteResponseChan := make(chan *VoteResponse, len(n.Cluster))
 			for _, peer := range n.Cluster {
 				go func(p string) {
-					voteResponseChan <- n.SendRequestVote(p)
+					voteResponseChan <- n.SendVoteRequest(p)
 				}(peer)
 			}
 
@@ -212,9 +212,12 @@ func (n *Node) RunForLeader() {
 						// TODO: should be retrying these
 						continue
 					}
-					if resp.Term > electionTerm {
-						// we discovered a higher term
-						n.termDiscoverChan <- resp.Term
+					if resp.Term != electionTerm {
+						if resp.Term > electionTerm {
+							// we discovered a higher term
+							n.termDiscoverChan <- resp.Term
+							continue
+						}
 						continue
 					}
 					if resp.VoteGranted {
@@ -229,7 +232,7 @@ func (n *Node) RunForLeader() {
 	}()
 }
 
-func (n *Node) SendRequestVote(peer string) *VoteResponse {
+func (n *Node) SendVoteRequest(peer string) *VoteResponse {
 	endpoint := fmt.Sprintf("http://%s/request_vote", peer)
 	log.Printf("querying %s", endpoint)
 	vr := VoteRequest{
@@ -266,6 +269,7 @@ func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 	}
 
 	// TODO: check log
+	n.VotedFor = vr.CandidateID
 	return VoteResponse{n.Term, true}, nil
 }
 
