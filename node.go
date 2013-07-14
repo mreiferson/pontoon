@@ -88,7 +88,6 @@ func (n *Node) Serve(address string) {
 		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 			log.Printf("ERROR: http.Serve() - %s", err.Error())
 		}
-
 		close(n.exitChan)
 		log.Printf("[%s] exiting Serve()", n.ID)
 	}()
@@ -262,7 +261,7 @@ func (n *Node) GatherVotes() {
 		go func(p string) {
 			vresp, err := n.SendVoteRequest(p)
 			if err != nil {
-				log.Printf("[%s] error in SendVoteRequest() to %x - %s", n.ID, p, err.Error())
+				log.Printf("[%s] error in SendVoteRequest() to %s - %s", n.ID, p, err.Error())
 				return
 			}
 			n.voteResponseChan <- vresp
@@ -312,8 +311,12 @@ func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 		return VoteResponse{n.Term, false}, nil
 	}
 
-	// TODO: check log
+	if n.Log.FresherThan(vr.LastLogIndex, vr.LastLogTerm) {
+		return VoteResponse{n.Term, false}, nil
+	}
+
 	log.Printf("[%s] granting vote to %s", n.ID, vr.CandidateID)
+
 	n.VotedFor = vr.CandidateID
 	return VoteResponse{n.Term, true}, nil
 }

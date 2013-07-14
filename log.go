@@ -11,3 +11,15 @@ type Log struct {
 	Index   int64
 	Entries []Entry
 }
+
+func (l *Log) FresherThan(index int64, term int64) bool {
+	if l.Term > term {
+		return true
+	}
+
+	if l.Term < term {
+		return false
+	}
+
+	return l.Index > index
+}
