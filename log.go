@@ -7,7 +7,7 @@ type Entry struct {
 }
 
 type Log struct {
-	Term int64
-	Index int64
+	Term    int64
+	Index   int64
 	Entries []Entry
 }

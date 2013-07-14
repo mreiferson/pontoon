@@ -29,11 +29,15 @@ type Node struct {
 
 	httpListener net.Listener
 
-	exitChan          chan int
-	requestVoteChan   chan VoteRequest
-	voteResponseChan  chan int
-	appendEntriesChan chan EntryRequest
-	termDiscoverChan  chan int64
+	exitChan         chan int
+	voteResponseChan chan int
+	termDiscoverChan chan int64
+
+	requestVoteChan         chan VoteRequest
+	requestVoteResponseChan chan VoteResponse
+
+	appendEntriesChan         chan EntryRequest
+	appendEntriesResponseChan chan EntryResponse
 
 	endElectionChan      chan int
 	finishedElectionChan chan int
@@ -85,46 +89,25 @@ func (n *Node) StateMachine() {
 	electionTimer := time.NewTimer(electionTimeout)
 	heartbeatInterval := 100 * time.Millisecond
 	heartbeatTimer := time.NewTicker(heartbeatInterval)
+
 	for {
 		select {
 		case <-n.exitChan:
 			goto exit
 		case newTerm := <-n.termDiscoverChan:
-			if n.endElectionChan != nil {
-				// we discovered a new term in the current election, end it
-				n.EndElection()
-			}
 			n.SetTerm(newTerm)
 		case vreq := <-n.requestVoteChan:
-			_ = vreq
-		case ae := <-n.appendEntriesChan:
-			// TODO: check if we're a candidate and end the election (someone else became leader)
-			_ = ae
+			vresp, _ := n.doRequestVote(vreq)
+			n.requestVoteResponseChan <- vresp
+		case ereq := <-n.appendEntriesChan:
+			eresp, _ := n.doAppendEntries(ereq)
+			n.appendEntriesResponseChan <- eresp
 		case <-electionTimer.C:
-			if n.endElectionChan != nil {
-				// the current election timed out, end it
-				n.EndElection()
-			}
-			n.NextTerm()
-			n.RunForLeader()
+			n.ElectionTimeout()
 		case <-n.voteResponseChan:
-			n.Lock()
-			n.Votes++
-			votes := n.Votes
-			majority := (len(n.Cluster)/2 + 1)
-			n.Unlock()
-			if votes >= majority {
-				// we won election, end it and promote
-				n.EndElection()
-				n.PromoteToLeader()
-			}
+			n.VoteGranted()
 		case <-heartbeatTimer.C:
-			n.RLock()
-			state := n.State
-			n.RUnlock()
-			if state == Leader {
-				// TODO: send heartbeats
-			}
+			n.SendHeartbeat()
 		}
 
 		if !electionTimer.Reset(electionTimeout) {
@@ -139,6 +122,17 @@ exit:
 func (n *Node) SetTerm(term int64) {
 	n.Lock()
 	defer n.Unlock()
+
+	// check freshness
+	if term <= n.Term {
+		return
+	}
+
+	if n.State == Candidate && n.endElectionChan != nil {
+		// we discovered a new term in the current election, end it
+		n.EndElection()
+	}
+
 	n.Term = term
 	n.State = Follower
 	n.VotedFor = ""
@@ -160,10 +154,29 @@ func (n *Node) PromoteToLeader() {
 	n.State = Leader
 }
 
+func (n *Node) ElectionTimeout() {
+	n.NextTerm()
+	n.RunForLeader()
+}
+
+func (n *Node) VoteGranted() {
+	n.Lock()
+	n.Votes++
+	votes := n.Votes
+	majority := len(n.Cluster)/2 + 1
+	n.Unlock()
+
+	if votes >= majority {
+		// we won election, end it and promote
+		n.EndElection()
+		n.PromoteToLeader()
+	}
+}
+
 func (n *Node) EndElection() {
 	close(n.endElectionChan)
-	n.endElectionChan = nil
 	<-n.finishedElectionChan
+	n.endElectionChan = nil
 	n.finishedElectionChan = nil
 }
 
@@ -233,18 +246,18 @@ func (n *Node) SendRequestVote(peer string) *VoteResponse {
 	term, _ := data.Get("term").Int64()
 	voteGranted, _ := data.Get("vote_granted").Bool()
 	return &VoteResponse{
-		Term: term,
+		Term:        term,
 		VoteGranted: voteGranted,
 	}
 }
 
-func (n *Node) RequestVote(vr VoteRequest) (VoteResponse, error) {
+func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 	if vr.Term < n.Term {
 		return VoteResponse{n.Term, false}, nil
 	}
 
 	if vr.Term > n.Term {
-		n.termDiscoverChan <- vr.Term
+		n.SetTerm(vr.Term)
 		return VoteResponse{n.Term, false}, nil
 	}
 
@@ -256,6 +269,27 @@ func (n *Node) RequestVote(vr VoteRequest) (VoteResponse, error) {
 	return VoteResponse{n.Term, true}, nil
 }
 
-func (n *Node) AppendEntries(e EntryRequest) (EntryResponse, error) {
+func (n *Node) RequestVote(vr VoteRequest) (VoteResponse, error) {
+	n.requestVoteChan <- vr
+	return <-n.requestVoteResponseChan, nil
+}
+
+func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
+	// TODO: check if we're a candidate and end the election (someone else became leader)
 	return EntryResponse{}, nil
+}
+
+func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
+	n.appendEntriesChan <- er
+	return <-n.appendEntriesResponseChan, nil
+}
+
+func (n *Node) SendHeartbeat() {
+	n.RLock()
+	state := n.State
+	n.RUnlock()
+
+	if state == Leader {
+		// TODO: send heartbeats
+	}
 }
