@@ -241,26 +241,25 @@ func (n *Node) RunForLeader() {
 	n.finishedElectionChan = make(chan int)
 	n.Unlock()
 
-	go func() {
-		for {
-			for _, peer := range n.Cluster {
-				go func(p string) {
-					vresp, err := n.SendVoteRequest(p)
-					if err != nil {
-						log.Printf("[%s] error in SendVoteRequest() to %x - %s", n.ID, p, err.Error())
-						return
-					}
-					n.voteResponseChan <- vresp
-				}(peer)
+	go n.GatherVotes()
+}
+
+func (n *Node) GatherVotes() {
+	for _, peer := range n.Cluster {
+		go func(p string) {
+			vresp, err := n.SendVoteRequest(p)
+			if err != nil {
+				log.Printf("[%s] error in SendVoteRequest() to %x - %s", n.ID, p, err.Error())
+				return
 			}
+			n.voteResponseChan <- vresp
+		}(peer)
+	}
 
-			// TODO: retry failed requests
+	// TODO: retry failed requests
 
-			<-n.endElectionChan
-			close(n.finishedElectionChan)
-			return
-		}
-	}()
+	<-n.endElectionChan
+	close(n.finishedElectionChan)
 }
 
 func (n *Node) SendVoteRequest(peer string) (VoteResponse, error) {

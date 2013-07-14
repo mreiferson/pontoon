@@ -24,7 +24,7 @@ func TestStartup(t *testing.T) {
 
 	// let them start serving
 	time.Sleep(100 * time.Millisecond)
-	
+
 	for i := 0; i < numNodes; i++ {
 		for j := 0; j < numNodes; j++ {
 			if j != i {
