@@ -19,7 +19,7 @@ const (
 type Node struct {
 	sync.RWMutex
 
-	Address  string
+	ID       string
 	State    int
 	Term     int64
 	VotedFor string
@@ -43,15 +43,20 @@ type Node struct {
 	finishedElectionChan chan int
 }
 
-func NewNode(address string) *Node {
+func NewNode(id string) *Node {
 	node := &Node{
-		Address:           address,
-		Log:               &Log{},
-		exitChan:          make(chan int),
-		requestVoteChan:   make(chan VoteRequest),
-		voteResponseChan:  make(chan int),
-		appendEntriesChan: make(chan EntryRequest),
-		termDiscoverChan:  make(chan int64),
+		ID:  id,
+		Log: &Log{},
+
+		exitChan:         make(chan int),
+		voteResponseChan: make(chan int),
+		termDiscoverChan: make(chan int64),
+
+		requestVoteChan:         make(chan VoteRequest),
+		requestVoteResponseChan: make(chan VoteResponse),
+
+		appendEntriesChan:         make(chan EntryRequest),
+		appendEntriesResponseChan: make(chan EntryResponse),
 	}
 	go node.StateMachine()
 	return node
@@ -65,37 +70,46 @@ func (n *Node) AddToCluster(member string) {
 	n.Cluster = append(n.Cluster, member)
 }
 
-func (n *Node) Serve() {
-	httpListener, err := net.Listen("tcp", n.Address)
+func (n *Node) Serve(address string) {
+	httpListener, err := net.Listen("tcp", address)
 	if err != nil {
-		log.Fatalf("FATAL: listen (%s) failed - %s", n.Address, err.Error())
+		log.Fatalf("FATAL: listen (%s) failed - %s", address, err.Error())
 	}
+	n.httpListener = httpListener
 
 	server := &http.Server{
 		Handler: n,
 	}
-	err = server.Serve(httpListener)
-	// theres no direct way to detect this error because it is not exposed
-	if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-		log.Printf("ERROR: http.Serve() - %s", err.Error())
-	}
+	go func() {
+		log.Printf("[%s] starting HTTP server", n.ID)
+		err := server.Serve(httpListener)
+		// theres no direct way to detect this error because it is not exposed
+		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("ERROR: http.Serve() - %s", err.Error())
+		}
 
-	close(n.exitChan)
-	log.Printf("exiting Serve()")
+		close(n.exitChan)
+		log.Printf("exiting Serve()")
+	}()
 }
 
 func (n *Node) StateMachine() {
+	log.Printf("[%s] starting StateMachine()", n.ID)
+
 	electionTimeout := 500 * time.Millisecond
 	electionTimer := time.NewTimer(electionTimeout)
 	heartbeatInterval := 100 * time.Millisecond
 	heartbeatTimer := time.NewTicker(heartbeatInterval)
 
 	for {
+		log.Printf("[%s] StateMachine() loop", n.ID)
+
 		select {
 		case <-n.exitChan:
 			goto exit
 		case newTerm := <-n.termDiscoverChan:
 			n.SetTerm(newTerm)
+			continue
 		case vreq := <-n.requestVoteChan:
 			vresp, _ := n.doRequestVote(vreq)
 			n.requestVoteResponseChan <- vresp
@@ -108,6 +122,7 @@ func (n *Node) StateMachine() {
 			n.VoteGranted()
 		case <-heartbeatTimer.C:
 			n.SendHeartbeat()
+			continue
 		}
 
 		if !electionTimer.Reset(electionTimeout) {
@@ -116,7 +131,7 @@ func (n *Node) StateMachine() {
 	}
 
 exit:
-	log.Printf("exiting StateMachine()")
+	log.Printf("[%s] starting StateMachine()", n.ID)
 }
 
 func (n *Node) SetTerm(term int64) {
@@ -151,10 +166,12 @@ func (n *Node) NextTerm() {
 func (n *Node) PromoteToLeader() {
 	n.Lock()
 	defer n.Unlock()
+	log.Printf("[%s] PromoteToLeader()", n.ID)
 	n.State = Leader
 }
 
 func (n *Node) ElectionTimeout() {
+	log.Printf("[%s] ElectionTimeout()", n.ID)
 	n.NextTerm()
 	n.RunForLeader()
 }
@@ -163,8 +180,10 @@ func (n *Node) VoteGranted() {
 	n.Lock()
 	n.Votes++
 	votes := n.Votes
-	majority := len(n.Cluster)/2 + 1
+	majority := (len(n.Cluster)+1)/2 + 1
 	n.Unlock()
+
+	log.Printf("[%s] VoteGranted() %d >= %d", n.ID, votes, majority)
 
 	if votes >= majority {
 		// we won election, end it and promote
@@ -174,6 +193,7 @@ func (n *Node) VoteGranted() {
 }
 
 func (n *Node) EndElection() {
+	log.Printf("[%s] EndElection()", n.ID)
 	close(n.endElectionChan)
 	<-n.finishedElectionChan
 	n.endElectionChan = nil
@@ -188,6 +208,8 @@ func (n *Node) EndElection() {
 //   - Election timeout elapses without election resolution: increment term, start new election
 //   - Discover higher term: step down
 func (n *Node) RunForLeader() {
+	log.Printf("[%s] RunForLeader()", n.ID)
+
 	n.Lock()
 	n.State = Candidate
 	n.Votes++
@@ -234,14 +256,14 @@ func (n *Node) RunForLeader() {
 
 func (n *Node) SendVoteRequest(peer string) *VoteResponse {
 	endpoint := fmt.Sprintf("http://%s/request_vote", peer)
-	log.Printf("querying %s", endpoint)
 	vr := VoteRequest{
 		Term:         n.Term,
-		CandidateID:  n.Address,
+		CandidateID:  n.httpListener.Addr().String(),
 		LastLogIndex: n.Log.Index,
 		LastLogTerm:  n.Log.Term,
 	}
-	data, err := ApiRequest(endpoint, vr, 100*time.Millisecond)
+	log.Printf("[%s] VoteRequest %+v to %s", n.ID, vr, endpoint)
+	data, err := ApiRequest("POST", endpoint, vr, 100*time.Millisecond)
 	if err != nil {
 		log.Printf("ERROR: %s - %s", endpoint, err.Error())
 		return nil
@@ -255,6 +277,8 @@ func (n *Node) SendVoteRequest(peer string) *VoteResponse {
 }
 
 func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
+	log.Printf("[%s] doRequestVote() %+v", n.ID, vr)
+
 	if vr.Term < n.Term {
 		return VoteResponse{n.Term, false}, nil
 	}

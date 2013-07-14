@@ -41,7 +41,7 @@ func NewDeadlineTransport(timeout time.Duration) *http.Transport {
 	return transport
 }
 
-func ApiRequest(endpoint string, body interface{}, timeout time.Duration) (*simplejson.Json, error) {
+func ApiRequest(method string, endpoint string, body interface{}, timeout time.Duration) (*simplejson.Json, error) {
 	httpclient := &http.Client{Transport: NewDeadlineTransport(timeout)}
 
 	js, err := json.Marshal(body)
@@ -50,7 +50,7 @@ func ApiRequest(endpoint string, body interface{}, timeout time.Duration) (*simp
 	}
 	buf := bytes.NewBuffer(js)
 
-	req, err := http.NewRequest("GET", endpoint, buf)
+	req, err := http.NewRequest(method, endpoint, buf)
 	if err != nil {
 		return nil, err
 	}

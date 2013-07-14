@@ -9,8 +9,8 @@ import (
 )
 
 func (n *Node) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if req.Method != "GET" {
-		// error
+	if req.Method != "POST" {
+		ApiResponse(w, 405, nil)
 	}
 
 	switch req.URL.Path {
@@ -21,13 +21,8 @@ func (n *Node) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case "/append_entries":
 		n.appendEntriesHandler(w, req)
 	default:
-		// error
+		ApiResponse(w, 404, nil)
 	}
-}
-
-func (n *Node) pingHandler(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Length", "2")
-	io.WriteString(w, "OK")
 }
 
 func ApiResponse(w http.ResponseWriter, statusCode int, data interface{}) {
@@ -40,6 +35,11 @@ func ApiResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(response)))
 	w.WriteHeader(statusCode)
 	w.Write(response)
+}
+
+func (n *Node) pingHandler(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Length", "2")
+	io.WriteString(w, "OK")
 }
 
 type VoteRequest struct {
