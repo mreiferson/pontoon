@@ -1,6 +1,7 @@
 package pontoon
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -12,51 +13,55 @@ func TestStartup(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
 	log.SetOutput(os.Stdout)
 
-	node1 := NewNode("1")
-	node2 := NewNode("2")
-	node3 := NewNode("3")
+	numNodes := 3
 
-	node1.Serve("127.0.0.1:0")
-	node2.Serve("127.0.0.1:0")
-	node3.Serve("127.0.0.1:0")
+	var nodes []*Node
+	for i := 0; i < numNodes; i++ {
+		node := NewNode(fmt.Sprintf("%d", i))
+		nodes = append(nodes, node)
+		nodes[i].Serve("127.0.0.1:0")
+	}
 
+	// let them start serving
 	time.Sleep(100 * time.Millisecond)
-
-	node1.AddToCluster(node2.httpListener.Addr().String())
-	node1.AddToCluster(node3.httpListener.Addr().String())
-
-	node2.AddToCluster(node1.httpListener.Addr().String())
-	node2.AddToCluster(node3.httpListener.Addr().String())
-
-	node3.AddToCluster(node1.httpListener.Addr().String())
-	node3.AddToCluster(node2.httpListener.Addr().String())
+	
+	for i := 0; i < numNodes; i++ {
+		for j := 0; j < numNodes; j++ {
+			if j != i {
+				nodes[i].AddToCluster(nodes[j].httpListener.Addr().String())
+			}
+		}
+	}
 
 	for {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		leaders := 0
-		node1.RLock()
-		if node1.State == Leader {
-			leaders++
+		for i := 0; i < numNodes; i++ {
+			nodes[i].RLock()
+			if nodes[i].State == Leader {
+				leaders++
+			}
+			nodes[i].RUnlock()
 		}
-		node1.RUnlock()
-
-		node2.RLock()
-		if node2.State == Leader {
-			leaders++
-		}
-		node2.RUnlock()
-
-		node3.RLock()
-		if node3.State == Leader {
-			leaders++
-		}
-		node3.RUnlock()
 
 		if leaders == 1 {
 			break
 		}
 	}
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(250 * time.Millisecond)
+
+	leaders := 0
+	for i := 0; i < numNodes; i++ {
+		nodes[i].RLock()
+		if nodes[i].State == Leader {
+			leaders++
+		}
+		nodes[i].RUnlock()
+	}
+
+	if leaders != 1 {
+		t.Fatalf("leaders should still be one")
+	}
 }
