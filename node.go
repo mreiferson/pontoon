@@ -136,7 +136,9 @@ func (n *Node) SetTerm(term int64) {
 func (n *Node) NextTerm() {
 	n.Lock()
 	defer n.Unlock()
+
 	log.Printf("[%s] NextTerm()", n.ID)
+
 	n.Term++
 	n.State = Follower
 	n.VotedFor = ""
@@ -146,10 +148,13 @@ func (n *Node) NextTerm() {
 func (n *Node) StepDown() {
 	n.Lock()
 	defer n.Unlock()
+
 	if n.State == Follower {
 		return
 	}
+
 	log.Printf("[%s] StepDown()", n.ID)
+
 	n.State = Follower
 	n.VotedFor = ""
 	n.Votes = 0
@@ -158,7 +163,9 @@ func (n *Node) StepDown() {
 func (n *Node) PromoteToLeader() {
 	n.Lock()
 	defer n.Unlock()
+
 	log.Printf("[%s] PromoteToLeader()", n.ID)
+
 	n.State = Leader
 }
 
@@ -166,7 +173,9 @@ func (n *Node) ElectionTimeout() {
 	if n.State == Leader {
 		return
 	}
+
 	log.Printf("[%s] ElectionTimeout()", n.ID)
+
 	n.NextTerm()
 	n.RunForLeader()
 }
@@ -194,8 +203,9 @@ func (n *Node) VoteGranted() {
 	n.Lock()
 	n.Votes++
 	votes := n.Votes
-	majority := (len(n.Cluster)+1)/2 + 1
 	n.Unlock()
+
+	majority := (len(n.Cluster)+1)/2 + 1
 
 	log.Printf("[%s] VoteGranted() %d >= %d", n.ID, votes, majority)
 
@@ -210,9 +220,12 @@ func (n *Node) EndElection() {
 	if n.State != Candidate || n.endElectionChan == nil {
 		return
 	}
+
 	log.Printf("[%s] EndElection()", n.ID)
+
 	close(n.endElectionChan)
 	<-n.finishedElectionChan
+
 	n.endElectionChan = nil
 	n.finishedElectionChan = nil
 }
@@ -225,15 +238,16 @@ func (n *Node) EndElection() {
 //   - Election timeout elapses without election resolution: increment term, start new election
 //   - Discover higher term: step down
 func (n *Node) RunForLeader() {
+	n.Lock()
+	defer n.Unlock()
+
 	log.Printf("[%s] RunForLeader()", n.ID)
 
-	n.Lock()
 	n.State = Candidate
 	n.Votes++
 	n.ElectionTerm = n.Term
 	n.endElectionChan = make(chan int)
 	n.finishedElectionChan = make(chan int)
-	n.Unlock()
 
 	go n.GatherVotes()
 }
@@ -245,6 +259,7 @@ func (n *Node) GatherVotes() {
 		LastLogIndex: n.Log.Index,
 		LastLogTerm:  n.Log.Term,
 	}
+
 	for _, peer := range n.Cluster {
 		go func(p string) {
 			vresp, err := n.Transport.RequestVoteRPC(p, vreq)
@@ -297,10 +312,12 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 	if er.Term < n.Term {
 		return EntryResponse{Term: n.Term, Success: false}, nil
 	}
+
 	if n.State != Follower {
 		n.EndElection()
 		n.StepDown()
 	}
+
 	return EntryResponse{Term: n.Term, Success: true}, nil
 }
 
@@ -317,16 +334,19 @@ func (n *Node) SendHeartbeat() {
 	}
 	n.RUnlock()
 
-	if state == Leader {
-		log.Printf("[%s] SendHeartbeat()", n.ID)
-		for _, peer := range n.Cluster {
-			go func(p string) {
-				_, err := n.Transport.AppendEntriesRPC(p, er)
-				if err != nil {
-					log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, p, err.Error())
-					return
-				}
-			}(peer)
-		}
+	if state != Leader {
+		return
+	}
+
+	log.Printf("[%s] SendHeartbeat()", n.ID)
+
+	for _, peer := range n.Cluster {
+		go func(p string) {
+			_, err := n.Transport.AppendEntriesRPC(p, er)
+			if err != nil {
+				log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, p, err.Error())
+				return
+			}
+		}(peer)
 	}
 }

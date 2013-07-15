@@ -86,7 +86,7 @@ func TestNodeKill(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
 	log.SetOutput(os.Stdout)
 
-	nodes := gimmeNodes(3)
+	nodes := gimmeNodes(5)
 
 	for {
 		time.Sleep(50 * time.Millisecond)
