@@ -4,10 +4,15 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"testing"
 	"time"
 )
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 
 func gimmeNodes(num int) []*Node {
 	var nodes []*Node

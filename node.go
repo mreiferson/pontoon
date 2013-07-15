@@ -63,7 +63,6 @@ func NewNode(id string, transport Transporter) *Node {
 		appendEntriesResponseChan: make(chan EntryResponse),
 	}
 	go node.StateMachine()
-	rand.Seed(time.Now().UnixNano())
 	return node
 }
 
@@ -90,8 +89,6 @@ func (n *Node) StateMachine() {
 	heartbeatTimer := time.NewTicker(heartbeatInterval)
 
 	for {
-		// log.Printf("[%s] StateMachine() loop", n.ID)
-
 		select {
 		case <-n.exitChan:
 			n.StepDown()
