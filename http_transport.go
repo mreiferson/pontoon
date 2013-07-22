@@ -65,6 +65,8 @@ func (t *HTTPTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		t.requestVoteHandler(w, req)
 	case "/append_entries":
 		t.appendEntriesHandler(w, req)
+	case "/command":
+		t.commandHandler(w, req)
 	default:
 		ApiResponse(w, 404, nil)
 	}
@@ -127,6 +129,33 @@ func (t *HTTPTransport) appendEntriesHandler(w http.ResponseWriter, req *http.Re
 	}
 
 	resp, err := t.node.AppendEntries(er)
+	if err != nil {
+		ApiResponse(w, 500, nil)
+	}
+
+	ApiResponse(w, 200, resp)
+}
+
+// TODO: split this out into peer transport and client transport
+// move into client transport
+func (t *HTTPTransport) commandHandler(w http.ResponseWriter, req *http.Request) {
+	var cr CommandRequest
+
+	data, err := ioutil.ReadAll(req.Body)
+	if err != nil {
+		ApiResponse(w, 500, nil)
+		return
+	}
+
+	err = json.Unmarshal(data, &cr)
+	if err != nil {
+		ApiResponse(w, 500, nil)
+		return
+	}
+
+	// TODO: clients should embed a client id for each command
+	// that is de-duped in the leaders log
+	resp, err := t.node.Command(cr)
 	if err != nil {
 		ApiResponse(w, 500, nil)
 	}

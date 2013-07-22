@@ -1,5 +1,20 @@
 package pontoon
 
+type Peer struct {
+	ID        string
+	NextIndex int64
+}
+
+type CommandRequest struct {
+	ID   int64
+	Name string
+	Body []byte
+}
+
+type CommandResponse struct {
+	LeaderID string
+}
+
 type VoteRequest struct {
 	Term         int64  `json:"term"`
 	CandidateID  string `json:"candidate_id"`
@@ -13,7 +28,11 @@ type VoteResponse struct {
 }
 
 type EntryRequest struct {
-	Term int64 `json:"term"`
+	Term         int64  `json:"term"`
+	LeaderID     string `json:"leader_id"`
+	PrevLogIndex int64  `json:"prev_log_index"`
+	PrevLogTerm  int64  `json:"prev_log_term"`
+	Data         []byte `json:"data"`
 }
 
 type EntryResponse struct {

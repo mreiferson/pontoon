@@ -1,6 +1,7 @@
 package pontoon
 
 import (
+	"bytes"
 	"log"
 	"math/rand"
 	"sync"
@@ -31,7 +32,7 @@ type Node struct {
 	VotedFor     string
 	Votes        int
 	Log          *Log
-	Cluster      []string
+	Cluster      []*Peer
 	Transport    Transporter
 
 	exitChan         chan int
@@ -42,6 +43,9 @@ type Node struct {
 
 	appendEntriesChan         chan EntryRequest
 	appendEntriesResponseChan chan EntryResponse
+
+	commandChan         chan CommandRequest
+	commandResponseChan chan CommandResponse
 
 	endElectionChan      chan int
 	finishedElectionChan chan int
@@ -61,6 +65,9 @@ func NewNode(id string, transport Transporter) *Node {
 
 		appendEntriesChan:         make(chan EntryRequest),
 		appendEntriesResponseChan: make(chan EntryResponse),
+
+		commandChan:         make(chan CommandRequest),
+		commandResponseChan: make(chan CommandResponse),
 	}
 	go node.StateMachine()
 	return node
@@ -75,7 +82,10 @@ func (n *Node) Exit() error {
 }
 
 func (n *Node) AddToCluster(member string) {
-	n.Cluster = append(n.Cluster, member)
+	p := &Peer{
+		ID: member,
+	}
+	n.Cluster = append(n.Cluster, p)
 }
 
 func (n *Node) StateMachine() {
@@ -99,6 +109,9 @@ func (n *Node) StateMachine() {
 		case ereq := <-n.appendEntriesChan:
 			eresp, _ := n.doAppendEntries(ereq)
 			n.appendEntriesResponseChan <- eresp
+		case creq := <-n.commandChan:
+			cresp, _ := n.doCommand(creq)
+			n.commandResponseChan <- cresp
 		case <-electionTimer.C:
 			n.ElectionTimeout()
 		case vresp := <-n.voteResponseChan:
@@ -167,6 +180,9 @@ func (n *Node) PromoteToLeader() {
 	log.Printf("[%s] PromoteToLeader()", n.ID)
 
 	n.State = Leader
+	for _, peer := range n.Cluster {
+		peer.NextIndex = n.Log.Index + 1
+	}
 }
 
 func (n *Node) ElectionTimeout() {
@@ -268,7 +284,7 @@ func (n *Node) GatherVotes() {
 				return
 			}
 			n.voteResponseChan <- vresp
-		}(peer)
+		}(peer.ID)
 	}
 
 	// TODO: retry failed requests
@@ -318,6 +334,24 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 		n.StepDown()
 	}
 
+	if er.Term > n.Term {
+		n.SetTerm(er.Term)
+	}
+
+	if bytes.Compare(er.Data, []byte("NOP")) == 0 {
+		err := n.Log.Nop(er.PrevLogTerm, er.PrevLogIndex, er.Term, er.PrevLogIndex+1)
+		if err != nil {
+			log.Printf("[%s] Nop error - %s", n.ID, err)
+			return EntryResponse{Term: n.Term, Success: false}, nil
+		}
+	} else {
+		err := n.Log.Append(er.PrevLogTerm, er.PrevLogIndex, er.Term, er.PrevLogIndex+1, er.Data)
+		if err != nil {
+			log.Printf("[%s] Append error - %s", n.ID, err)
+			return EntryResponse{Term: n.Term, Success: false}, nil
+		}
+	}
+
 	return EntryResponse{Term: n.Term, Success: true}, nil
 }
 
@@ -326,12 +360,45 @@ func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
 	return <-n.appendEntriesResponseChan, nil
 }
 
+func (n *Node) doCommand(cr CommandRequest) (CommandResponse, error) {
+	n.RLock()
+	state := n.State
+	leaderID := n.ID
+	n.RUnlock()
+
+	if state != Leader {
+		return CommandResponse{leaderID}, nil
+	}
+
+	
+
+	return CommandResponse{}, nil
+}
+
+func (n *Node) Command(cr CommandRequest) (CommandResponse, error) {
+	n.commandChan <- cr
+	return <-n.commandResponseChan, nil
+}
+
 func (n *Node) SendHeartbeat() {
 	n.RLock()
 	state := n.State
-	er := EntryRequest{
-		Term: n.Term,
+
+	var prevEntry *Entry
+	prevLogIndex := n.Log.Index - 1
+	prevLogTerm := int64(-1)
+	if prevLogIndex >= 0 {
+		prevEntry = n.Log.Entries[prevLogIndex]
+		prevLogTerm = prevEntry.Term
 	}
+	er := EntryRequest{
+		LeaderID:     n.ID,
+		Term:         n.Term,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Data:         []byte("NOP"),
+	}
+
 	n.RUnlock()
 
 	if state != Leader {
@@ -347,6 +414,6 @@ func (n *Node) SendHeartbeat() {
 				log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, p, err.Error())
 				return
 			}
-		}(peer)
+		}(peer.ID)
 	}
 }
