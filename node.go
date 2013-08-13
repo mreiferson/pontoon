@@ -68,12 +68,15 @@ func NewNode(id string, transport Transporter, logger Logger, applyer Applyer) *
 		commandChan:         make(chan CommandRequest),
 		commandResponseChan: make(chan CommandResponse),
 	}
-	go node.ioLoop()
 	return node
 }
 
-func (n *Node) Start() error {
+func (n *Node) Serve() error {
 	return n.Transport.Serve(n)
+}
+
+func (n *Node) Start() {
+	go n.ioLoop()
 }
 
 func (n *Node) Exit() error {
@@ -125,13 +128,14 @@ func (n *Node) ioLoop() {
 		}
 
 		randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))
+		log.Printf("[%s] looping/resetting election timeout %s", n.ID, randElectionTimeout)
 		if !electionTimer.Reset(randElectionTimeout) {
 			electionTimer = time.NewTimer(randElectionTimeout)
 		}
 	}
 
 exit:
-	log.Printf("[%s] exiting StateMachine()", n.ID)
+	log.Printf("[%s] exiting ioLoop()", n.ID)
 }
 
 func (n *Node) setTerm(term int64) {
@@ -256,7 +260,7 @@ func (n *Node) updateFollowers() {
 		}
 
 		entry := n.Log.Get(peer.NextIndex)
-		cmdReq := n.Uncommitted[entry.CmdID]
+		cr := n.Uncommitted[entry.CmdID]
 		majority := int32((len(n.Cluster)+1)/2 + 1)
 
 		er := n.newEntryRequest(entry.CmdID, peer.NextIndex-1, entry.Data)
@@ -270,14 +274,15 @@ func (n *Node) updateFollowers() {
 			}
 			continue
 		}
-		cmdReq.ReplicationCount++
-		if cmdReq.ReplicationCount >= majority {
-			log.Printf("... committed %+v", cmdReq)
-			err := n.StateMachine.Apply(cmdReq)
+		cr.ReplicationCount++
+		if cr.ReplicationCount >= majority && cr.State != Committed {
+			cr.State = Committed
+			log.Printf("... committed %+v", cr)
+			err := n.StateMachine.Apply(cr)
 			if err != nil {
 				// TODO: what do we do here?
 			}
-			cmdReq.ResponseChan <- CommandResponse{LeaderID: n.VotedFor, Success: true}
+			cr.ResponseChan <- CommandResponse{LeaderID: n.VotedFor, Success: true}
 		}
 		peer.NextIndex++
 	}
@@ -375,6 +380,7 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 	}
 
 	if bytes.Compare(er.Data, []byte("NOP")) == 0 {
+		log.Printf("[%s] HEARTBEAT", n.ID)
 		return EntryResponse{Term: n.Term, Success: true}, nil
 	}
 
@@ -406,6 +412,7 @@ func (n *Node) doCommand(cr CommandRequest) {
 	}
 
 	// TODO: should check uncommitted before re-appending, etc.
+	cr.State = Logged
 	cr.ReplicationCount++
 	n.Uncommitted[cr.ID] = &cr
 }

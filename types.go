@@ -6,6 +6,12 @@ const (
 	Leader
 )
 
+const (
+	Initialized = iota
+	Logged
+	Committed
+)
+
 type Transporter interface {
 	Serve(node *Node) error
 	Close() error
@@ -39,6 +45,7 @@ type CommandRequest struct {
 	Body             []byte `json:"body"`
 	ResponseChan     chan CommandResponse
 	ReplicationCount int32
+	State            int32
 }
 
 type CommandResponse struct {

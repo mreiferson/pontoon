@@ -23,7 +23,7 @@ func gimmeNodes(num int) []*Node {
 		applyer := &StateMachine{}
 		node := NewNode(fmt.Sprintf("%d", i), transport, logger, applyer)
 		nodes = append(nodes, node)
-		nodes[i].Start()
+		nodes[i].Serve()
 	}
 
 	// let them start serving
@@ -35,6 +35,10 @@ func gimmeNodes(num int) []*Node {
 				nodes[i].AddToCluster(nodes[j].Transport.String())
 			}
 		}
+	}
+	
+	for _, node := range nodes {
+		node.Start()
 	}
 
 	return nodes
@@ -64,21 +68,31 @@ func findLeader(nodes []*Node) *Node {
 	return nil
 }
 
-func TestStartup(t *testing.T) {
-	log.SetOutput(ioutil.Discard)
-	log.SetOutput(os.Stdout)
-
-	nodes := gimmeNodes(3)
-
+func startCluster(num int) ([]*Node, *Node) {
+	nodes := gimmeNodes(num)
 	for {
 		time.Sleep(50 * time.Millisecond)
 		if countLeaders(nodes) == 1 {
 			break
 		}
 	}
+	leader := findLeader(nodes)
+	return nodes, leader
+}
 
+func stopCluster(nodes []*Node) {
+	for _, node := range nodes {
+		node.Exit()
+	}
+}
+
+func TestStartup(t *testing.T) {
+	log.SetOutput(ioutil.Discard)
+	log.SetOutput(os.Stdout)
+
+	nodes, _ := startCluster(3)
+	defer stopCluster(nodes)
 	time.Sleep(250 * time.Millisecond)
-
 	if countLeaders(nodes) != 1 {
 		t.Fatalf("leaders should still be one")
 	}
@@ -88,18 +102,9 @@ func TestNodeKill(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
 	log.SetOutput(os.Stdout)
 
-	nodes := gimmeNodes(5)
-
-	for {
-		time.Sleep(50 * time.Millisecond)
-		if countLeaders(nodes) == 1 {
-			break
-		}
-	}
-
-	leader := findLeader(nodes)
+	nodes, leader := startCluster(3)
+	defer stopCluster(nodes)
 	leader.Exit()
-
 	for {
 		time.Sleep(50 * time.Millisecond)
 		if countLeaders(nodes) == 1 {
@@ -111,24 +116,11 @@ func TestNodeKill(t *testing.T) {
 func TestCommand(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
 	log.SetOutput(os.Stdout)
+	
+	log.SetFlags(log.Ldate | log.Lmicroseconds)
 
-	nodes := gimmeNodes(3)
-
-	for {
-		time.Sleep(50 * time.Millisecond)
-		if countLeaders(nodes) == 1 {
-			break
-		}
-	}
-
-	time.Sleep(250 * time.Millisecond)
-
-	if countLeaders(nodes) != 1 {
-		t.Fatalf("leaders should still be one")
-	}
-
-	leader := findLeader(nodes)
-
+	nodes, leader := startCluster(5)
+	defer stopCluster(nodes)
 	for i := int64(0); i < 10; i++ {
 		responseChan := make(chan CommandResponse, 1)
 		cr := CommandRequest{
