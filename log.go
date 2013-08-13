@@ -15,9 +15,22 @@ type Entry struct {
 type Log struct {
 	sync.RWMutex
 
-	Index   int64
-	Term    int64
+	index   int64
+	term    int64
+
 	Entries []*Entry
+}
+
+func (l *Log) Index() int64 {
+	return l.index
+}
+
+func (l *Log) LastIndex() int64 {
+	return l.index - 1
+}
+
+func (l *Log) Term() int64 {
+	return l.term
 }
 
 func (l *Log) Get(index int64) *Entry {
@@ -28,15 +41,15 @@ func (l *Log) Get(index int64) *Entry {
 }
 
 func (l *Log) FresherThan(index int64, term int64) bool {
-	if l.Term > term {
+	if l.term > term {
 		return true
 	}
 
-	if l.Term < term {
+	if l.term < term {
 		return false
 	}
 
-	return l.Index > index
+	return l.index > index
 }
 
 func (l *Log) Check(prevLogIndex int64, prevLogTerm int64, index int64, term int64) error {
@@ -55,25 +68,25 @@ func (l *Log) Check(prevLogIndex int64, prevLogTerm int64, index int64, term int
 }
 
 func (l *Log) Append(index int64, term int64, data []byte) error {
-	if term != l.Term {
-		l.Term = term
+	if term != l.term {
+		l.term = term
 	}
 
 	e := &Entry{
 		Index: index,
-		Term:  l.Term,
+		Term:  l.term,
 		Data:  data,
 	}
 
 	log.Printf("... appending %+v", e)
 
-	if index < l.Index {
+	if index < l.index {
 		log.Printf("... truncating to %d", index-1)
 		l.Entries = l.Entries[:index]
 	}
 
 	l.Entries = append(l.Entries, e)
 
-	l.Index = index + 1
+	l.index = index + 1
 	return nil
 }

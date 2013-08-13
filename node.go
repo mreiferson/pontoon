@@ -15,20 +15,6 @@ import (
 	"time"
 )
 
-const (
-	Follower = iota
-	Candidate
-	Leader
-)
-
-type Transporter interface {
-	Serve(node *Node) error
-	Close() error
-	String() string
-	RequestVoteRPC(address string, voteRequest VoteRequest) (VoteResponse, error)
-	AppendEntriesRPC(address string, entryRequest EntryRequest) (EntryResponse, error)
-}
-
 type Node struct {
 	sync.RWMutex
 
@@ -38,8 +24,8 @@ type Node struct {
 	ElectionTerm int64
 	VotedFor     string
 	Votes        int
-	Log          *Log
 	Cluster      []*Peer
+	Log          Logger
 	Transport    Transporter
 
 	exitChan         chan int
@@ -193,7 +179,7 @@ func (n *Node) promoteToLeader() {
 
 	n.State = Leader
 	for _, peer := range n.Cluster {
-		peer.NextIndex = n.Log.Index
+		peer.NextIndex = n.Log.Index()
 	}
 }
 
@@ -260,7 +246,7 @@ func (n *Node) endElection() {
 
 func (n *Node) updateFollowers() {
 	for _, peer := range n.Cluster {
-		if (n.Log.Index - 1) < peer.NextIndex {
+		if n.Log.LastIndex() < peer.NextIndex {
 			continue
 		}
 		er := n.newEntryRequest(peer.NextIndex - 1, n.Log.Get(peer.NextIndex).Data)
@@ -297,8 +283,8 @@ func (n *Node) gatherVotes() {
 	vreq := VoteRequest{
 		Term:         n.Term,
 		CandidateID:  n.Transport.String(),
-		LastLogIndex: n.Log.Index,
-		LastLogTerm:  n.Log.Term,
+		LastLogIndex: n.Log.Index(),
+		LastLogTerm:  n.Log.Term(),
 	}
 
 	for _, peer := range n.Cluster {
@@ -394,7 +380,7 @@ func (n *Node) doCommand(cr CommandRequest) (CommandResponse, error) {
 		return CommandResponse{leaderID}, nil
 	}
 
-	err := n.Log.Append(n.Log.Index, n.Log.Term, cr.Body)
+	err := n.Log.Append(n.Log.Index(), n.Term, cr.Body)
 	if err != nil {
 		return CommandResponse{leaderID}, nil
 	}
@@ -410,7 +396,7 @@ func (n *Node) Command(cr CommandRequest) (CommandResponse, error) {
 func (n *Node) sendHeartbeat() {
 	n.RLock()
 	state := n.State
-	er := n.newEntryRequest(n.Log.Index - 1, []byte("NOP"))
+	er := n.newEntryRequest(n.Log.LastIndex(), []byte("NOP"))
 	n.RUnlock()
 
 	if state != Leader {
