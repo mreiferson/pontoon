@@ -420,12 +420,12 @@ func (n *Node) sendHeartbeat() {
 	n.RLock()
 	state := n.State
 
-	var prevEntry *Entry
-	prevLogIndex := n.Log.Index - 1
+	entry := n.Log.Get(n.Log.Index - 1)
+	prevLogIndex := int64(-1)
 	prevLogTerm := int64(-1)
-	if prevLogIndex >= 0 {
-		prevEntry = n.Log.Entries[prevLogIndex]
-		prevLogTerm = prevEntry.Term
+	if entry != nil {
+		prevLogIndex = entry.Index
+		prevLogTerm = entry.Term
 	}
 	er := EntryRequest{
 		LeaderID:     n.ID,
