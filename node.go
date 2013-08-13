@@ -338,14 +338,13 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 		n.SetTerm(er.Term)
 	}
 
-	if bytes.Compare(er.Data, []byte("NOP")) == 0 {
-		err := n.Log.Nop(er.PrevLogTerm, er.PrevLogIndex, er.Term, er.PrevLogIndex+1)
-		if err != nil {
-			log.Printf("[%s] Nop error - %s", n.ID, err)
-			return EntryResponse{Term: n.Term, Success: false}, nil
-		}
-	} else {
-		err := n.Log.Append(er.PrevLogTerm, er.PrevLogIndex, er.Term, er.PrevLogIndex+1, er.Data)
+	err := n.Log.Check(er.PrevLogIndex, er.PrevLogTerm, er.PrevLogIndex+1, er.Term)
+	if err != nil {
+		log.Printf("[%s] Check error - %s", n.ID, err)
+		return EntryResponse{Term: n.Term, Success: false}, nil
+	}
+	if bytes.Compare(er.Data, []byte("NOP")) != 0 {
+		err := n.Log.Append(er.PrevLogIndex, er.Term, er.Data)
 		if err != nil {
 			log.Printf("[%s] Append error - %s", n.ID, err)
 			return EntryResponse{Term: n.Term, Success: false}, nil
@@ -369,8 +368,6 @@ func (n *Node) doCommand(cr CommandRequest) (CommandResponse, error) {
 	if state != Leader {
 		return CommandResponse{leaderID}, nil
 	}
-
-	
 
 	return CommandResponse{}, nil
 }
