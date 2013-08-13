@@ -263,20 +263,7 @@ func (n *Node) updateFollowers() {
 		if (n.Log.Index - 1) < peer.NextIndex {
 			continue
 		}
-		entry := n.Log.Get(peer.NextIndex - 1)
-		prevLogIndex := int64(-1)
-		prevLogTerm := int64(-1)
-		if entry != nil {
-			prevLogIndex = entry.Index
-			prevLogTerm = entry.Term
-		}
-		er := EntryRequest{
-			LeaderID:     n.ID,
-			Term:         n.Term,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			Data:         n.Log.Get(peer.NextIndex).Data,
-		}
+		er := n.newEntryRequest(peer.NextIndex - 1, n.Log.Get(peer.NextIndex).Data)
 		log.Printf("[%s] updating follower %s - %+v", n.ID, peer.ID, er)
 		_, err := n.Transport.AppendEntriesRPC(peer.ID, er)
 		if err != nil {
@@ -423,22 +410,7 @@ func (n *Node) Command(cr CommandRequest) (CommandResponse, error) {
 func (n *Node) sendHeartbeat() {
 	n.RLock()
 	state := n.State
-
-	entry := n.Log.Get(n.Log.Index - 1)
-	prevLogIndex := int64(-1)
-	prevLogTerm := int64(-1)
-	if entry != nil {
-		prevLogIndex = entry.Index
-		prevLogTerm = entry.Term
-	}
-	er := EntryRequest{
-		LeaderID:     n.ID,
-		Term:         n.Term,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		Data:         []byte("NOP"),
-	}
-
+	er := n.newEntryRequest(n.Log.Index - 1, []byte("NOP"))
 	n.RUnlock()
 
 	if state != Leader {
@@ -455,5 +427,22 @@ func (n *Node) sendHeartbeat() {
 				return
 			}
 		}(peer.ID)
+	}
+}
+
+func (n *Node) newEntryRequest(index int64, data []byte) EntryRequest {
+	entry := n.Log.Get(index)
+	prevLogIndex := int64(-1)
+	prevLogTerm := int64(-1)
+	if entry != nil {
+		prevLogIndex = entry.Index
+		prevLogTerm = entry.Term
+	}
+	return EntryRequest{
+		LeaderID:     n.ID,
+		Term:         n.Term,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Data:         data,
 	}
 }
