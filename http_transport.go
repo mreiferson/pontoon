@@ -24,7 +24,7 @@ func (t *HTTPTransport) Serve(node *Node) error {
 
 	httpListener, err := net.Listen("tcp", t.Address)
 	if err != nil {
-		log.Fatalf("FATAL: listen (%s) failed - %s", t.Address, err.Error())
+		log.Fatalf("FATAL: listen (%s) failed - %s", t.Address, err)
 	}
 	t.listener = httpListener
 
@@ -36,7 +36,7 @@ func (t *HTTPTransport) Serve(node *Node) error {
 		err := server.Serve(httpListener)
 		// theres no direct way to detect this error because it is not exposed
 		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-			log.Printf("ERROR: http.Serve() - %s", err.Error())
+			log.Printf("ERROR: http.Serve() - %s", err)
 		}
 		close(t.node.exitChan)
 		log.Printf("[%s] exiting Serve()", t.node.ID)

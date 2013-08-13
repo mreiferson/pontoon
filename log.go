@@ -20,6 +20,13 @@ type Log struct {
 	Entries []*Entry
 }
 
+func (l *Log) Get(index int64) *Entry {
+	if index < 0 {
+		return nil
+	}
+	return l.Entries[index]
+}
+
 func (l *Log) FresherThan(index int64, term int64) bool {
 	if l.Term > term {
 		return true

@@ -105,3 +105,35 @@ func TestNodeKill(t *testing.T) {
 		}
 	}
 }
+
+func TestCommand(t *testing.T) {
+	log.SetOutput(ioutil.Discard)
+	log.SetOutput(os.Stdout)
+
+	nodes := gimmeNodes(3)
+
+	for {
+		time.Sleep(50 * time.Millisecond)
+		if countLeaders(nodes) == 1 {
+			break
+		}
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	if countLeaders(nodes) != 1 {
+		t.Fatalf("leaders should still be one")
+	}
+
+	leader := findLeader(nodes)
+
+	cr := CommandRequest{
+		ID: 1,
+		Name: "SUP",
+		Body: []byte("BODY"),
+	}
+	leader.Command(cr)
+
+	time.Sleep(10 * time.Second)
+}
+

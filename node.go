@@ -1,3 +1,10 @@
+// - Increment currentTerm, vote for self
+// - Reset election timeout
+// - Send RequestVote RPCs to all other servers, wait for either:
+//   - Votes received from majority of servers: become leader
+//   - AppendEntries RPC received from new leader: step down
+//   - Election timeout elapses without election resolution: increment term, start new election
+//   - Discover higher term: step down
 package pontoon
 
 import (
@@ -95,13 +102,13 @@ func (n *Node) stateMachine() {
 	randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))
 	electionTimer := time.NewTimer(randElectionTimeout)
 
-	heartbeatInterval := 100 * time.Millisecond
-	heartbeatTimer := time.NewTicker(heartbeatInterval)
+	followerTimer := time.NewTicker(10 * time.Millisecond)
+	heartbeatTimer := time.NewTicker(100 * time.Millisecond)
 
 	for {
 		select {
 		case <-n.exitChan:
-			n.StepDown()
+			n.stepDown()
 			goto exit
 		case vreq := <-n.requestVoteChan:
 			vresp, _ := n.doRequestVote(vreq)
@@ -113,11 +120,16 @@ func (n *Node) stateMachine() {
 			cresp, _ := n.doCommand(creq)
 			n.commandResponseChan <- cresp
 		case <-electionTimer.C:
-			n.ElectionTimeout()
+			n.electionTimeout()
 		case vresp := <-n.voteResponseChan:
-			n.VoteResponse(vresp)
+			n.voteResponse(vresp)
+		case <-followerTimer.C:
+			if n.State != Leader {
+				continue
+			}
+			n.updateFollowers()
 		case <-heartbeatTimer.C:
-			n.SendHeartbeat()
+			n.sendHeartbeat()
 			continue
 		}
 
@@ -131,7 +143,7 @@ exit:
 	log.Printf("[%s] exiting StateMachine()", n.ID)
 }
 
-func (n *Node) SetTerm(term int64) {
+func (n *Node) setTerm(term int64) {
 	n.Lock()
 	defer n.Unlock()
 
@@ -146,11 +158,11 @@ func (n *Node) SetTerm(term int64) {
 	n.Votes = 0
 }
 
-func (n *Node) NextTerm() {
+func (n *Node) nextTerm() {
 	n.Lock()
 	defer n.Unlock()
 
-	log.Printf("[%s] NextTerm()", n.ID)
+	log.Printf("[%s] nextTerm()", n.ID)
 
 	n.Term++
 	n.State = Follower
@@ -158,7 +170,7 @@ func (n *Node) NextTerm() {
 	n.Votes = 0
 }
 
-func (n *Node) StepDown() {
+func (n *Node) stepDown() {
 	n.Lock()
 	defer n.Unlock()
 
@@ -166,37 +178,37 @@ func (n *Node) StepDown() {
 		return
 	}
 
-	log.Printf("[%s] StepDown()", n.ID)
+	log.Printf("[%s] stepDown()", n.ID)
 
 	n.State = Follower
 	n.VotedFor = ""
 	n.Votes = 0
 }
 
-func (n *Node) PromoteToLeader() {
+func (n *Node) promoteToLeader() {
 	n.Lock()
 	defer n.Unlock()
 
-	log.Printf("[%s] PromoteToLeader()", n.ID)
+	log.Printf("[%s] promoteToLeader()", n.ID)
 
 	n.State = Leader
 	for _, peer := range n.Cluster {
-		peer.NextIndex = n.Log.Index + 1
+		peer.NextIndex = n.Log.Index
 	}
 }
 
-func (n *Node) ElectionTimeout() {
+func (n *Node) electionTimeout() {
 	if n.State == Leader {
 		return
 	}
 
-	log.Printf("[%s] ElectionTimeout()", n.ID)
+	log.Printf("[%s] electionTimeout()", n.ID)
 
-	n.NextTerm()
-	n.RunForLeader()
+	n.nextTerm()
+	n.runForLeader()
 }
 
-func (n *Node) VoteResponse(vresp VoteResponse) {
+func (n *Node) voteResponse(vresp VoteResponse) {
 	if n.State != Candidate {
 		return
 	}
@@ -204,18 +216,18 @@ func (n *Node) VoteResponse(vresp VoteResponse) {
 	if vresp.Term != n.ElectionTerm {
 		if vresp.Term > n.ElectionTerm {
 			// we discovered a higher term
-			n.EndElection()
-			n.SetTerm(vresp.Term)
+			n.endElection()
+			n.setTerm(vresp.Term)
 		}
 		return
 	}
 
 	if vresp.VoteGranted {
-		n.VoteGranted()
+		n.voteGranted()
 	}
 }
 
-func (n *Node) VoteGranted() {
+func (n *Node) voteGranted() {
 	n.Lock()
 	n.Votes++
 	votes := n.Votes
@@ -223,21 +235,21 @@ func (n *Node) VoteGranted() {
 
 	majority := (len(n.Cluster)+1)/2 + 1
 
-	log.Printf("[%s] VoteGranted() %d >= %d", n.ID, votes, majority)
+	log.Printf("[%s] voteGranted() %d >= %d", n.ID, votes, majority)
 
 	if votes >= majority {
 		// we won election, end it and promote
-		n.EndElection()
-		n.PromoteToLeader()
+		n.endElection()
+		n.promoteToLeader()
 	}
 }
 
-func (n *Node) EndElection() {
+func (n *Node) endElection() {
 	if n.State != Candidate || n.endElectionChan == nil {
 		return
 	}
 
-	log.Printf("[%s] EndElection()", n.ID)
+	log.Printf("[%s] endElection()", n.ID)
 
 	close(n.endElectionChan)
 	<-n.finishedElectionChan
@@ -246,18 +258,40 @@ func (n *Node) EndElection() {
 	n.finishedElectionChan = nil
 }
 
-// - Increment currentTerm, vote for self
-// - Reset election timeout
-// - Send RequestVote RPCs to all other servers, wait for either:
-//   - Votes received from majority of servers: become leader
-//   - AppendEntries RPC received from new leader: step down
-//   - Election timeout elapses without election resolution: increment term, start new election
-//   - Discover higher term: step down
-func (n *Node) RunForLeader() {
+func (n *Node) updateFollowers() {
+	for _, peer := range n.Cluster {
+		if (n.Log.Index - 1) < peer.NextIndex {
+			continue
+		}
+		entry := n.Log.Get(peer.NextIndex - 1)
+		prevLogIndex := int64(-1)
+		prevLogTerm := int64(-1)
+		if entry != nil {
+			prevLogIndex = entry.Index
+			prevLogTerm = entry.Term
+		}
+		er := EntryRequest{
+			LeaderID:     n.ID,
+			Term:         n.Term,
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			Data:         n.Log.Get(peer.NextIndex).Data,
+		}
+		log.Printf("[%s] updating follower %s - %+v", n.ID, peer.ID, er)
+		_, err := n.Transport.AppendEntriesRPC(peer.ID, er)
+		if err != nil {
+			log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, peer.ID, err)
+			return
+		}
+		peer.NextIndex++
+	}
+}
+
+func (n *Node) runForLeader() {
 	n.Lock()
 	defer n.Unlock()
 
-	log.Printf("[%s] RunForLeader()", n.ID)
+	log.Printf("[%s] runForLeader()", n.ID)
 
 	n.State = Candidate
 	n.Votes++
@@ -265,10 +299,10 @@ func (n *Node) RunForLeader() {
 	n.endElectionChan = make(chan int)
 	n.finishedElectionChan = make(chan int)
 
-	go n.GatherVotes()
+	go n.gatherVotes()
 }
 
-func (n *Node) GatherVotes() {
+func (n *Node) gatherVotes() {
 	vreq := VoteRequest{
 		Term:         n.Term,
 		CandidateID:  n.Transport.String(),
@@ -280,7 +314,7 @@ func (n *Node) GatherVotes() {
 		go func(p string) {
 			vresp, err := n.Transport.RequestVoteRPC(p, vreq)
 			if err != nil {
-				log.Printf("[%s] error in RequestVoteRPC() to %s - %s", n.ID, p, err.Error())
+				log.Printf("[%s] error in RequestVoteRPC() to %s - %s", n.ID, p, err)
 				return
 			}
 			n.voteResponseChan <- vresp
@@ -301,8 +335,8 @@ func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 	}
 
 	if vr.Term > n.Term {
-		n.EndElection()
-		n.SetTerm(vr.Term)
+		n.endElection()
+		n.setTerm(vr.Term)
 	}
 
 	if n.VotedFor != "" && n.VotedFor != vr.CandidateID {
@@ -330,12 +364,12 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 	}
 
 	if n.State != Follower {
-		n.EndElection()
-		n.StepDown()
+		n.endElection()
+		n.stepDown()
 	}
 
 	if er.Term > n.Term {
-		n.SetTerm(er.Term)
+		n.setTerm(er.Term)
 	}
 
 	err := n.Log.Check(er.PrevLogIndex, er.PrevLogTerm, er.PrevLogIndex+1, er.Term)
@@ -344,7 +378,7 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 		return EntryResponse{Term: n.Term, Success: false}, nil
 	}
 	if bytes.Compare(er.Data, []byte("NOP")) != 0 {
-		err := n.Log.Append(er.PrevLogIndex, er.Term, er.Data)
+		err := n.Log.Append(er.PrevLogIndex+1, er.Term, er.Data)
 		if err != nil {
 			log.Printf("[%s] Append error - %s", n.ID, err)
 			return EntryResponse{Term: n.Term, Success: false}, nil
@@ -369,7 +403,12 @@ func (n *Node) doCommand(cr CommandRequest) (CommandResponse, error) {
 		return CommandResponse{leaderID}, nil
 	}
 
-	return CommandResponse{}, nil
+	err := n.Log.Append(n.Log.Index, n.Log.Term, cr.Body)
+	if err != nil {
+		return CommandResponse{leaderID}, nil
+	}
+
+	return CommandResponse{leaderID}, nil
 }
 
 func (n *Node) Command(cr CommandRequest) (CommandResponse, error) {
@@ -377,7 +416,7 @@ func (n *Node) Command(cr CommandRequest) (CommandResponse, error) {
 	return <-n.commandResponseChan, nil
 }
 
-func (n *Node) SendHeartbeat() {
+func (n *Node) sendHeartbeat() {
 	n.RLock()
 	state := n.State
 
@@ -402,13 +441,13 @@ func (n *Node) SendHeartbeat() {
 		return
 	}
 
-	log.Printf("[%s] SendHeartbeat()", n.ID)
+	log.Printf("[%s] sendHeartbeat()", n.ID)
 
 	for _, peer := range n.Cluster {
 		go func(p string) {
 			_, err := n.Transport.AppendEntriesRPC(p, er)
 			if err != nil {
-				log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, p, err.Error())
+				log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, p, err)
 				return
 			}
 		}(peer.ID)
