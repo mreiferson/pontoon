@@ -281,7 +281,11 @@ func (n *Node) updateFollowers() {
 		_, err := n.Transport.AppendEntriesRPC(peer.ID, er)
 		if err != nil {
 			log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, peer.ID, err)
-			return
+			peer.NextIndex--
+			if peer.NextIndex < 0 {
+				peer.NextIndex = 0
+			}
+			continue
 		}
 		peer.NextIndex++
 	}

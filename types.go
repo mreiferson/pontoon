@@ -6,9 +6,10 @@ type Peer struct {
 }
 
 type CommandRequest struct {
-	ID   int64
-	Name string
-	Body []byte
+	ID              int64
+	Name            string
+	Body            []byte
+	responseChannel chan bool
 }
 
 type CommandResponse struct {
@@ -28,11 +29,12 @@ type VoteResponse struct {
 }
 
 type EntryRequest struct {
-	Term         int64  `json:"term"`
-	LeaderID     string `json:"leader_id"`
-	PrevLogIndex int64  `json:"prev_log_index"`
-	PrevLogTerm  int64  `json:"prev_log_term"`
-	Data         []byte `json:"data"`
+	Term           int64  `json:"term"`
+	LeaderID       string `json:"leader_id"`
+	PrevLogIndex   int64  `json:"prev_log_index"`
+	PrevLogTerm    int64  `json:"prev_log_term"`
+	Data           []byte `json:"data"`
+	commandRequest *CommandRequest
 }
 
 type EntryResponse struct {

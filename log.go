@@ -68,7 +68,7 @@ func (l *Log) Append(index int64, term int64, data []byte) error {
 	log.Printf("... appending %+v", e)
 
 	if index < l.Index {
-		log.Printf("... truncating to %d", index - 1)
+		log.Printf("... truncating to %d", index-1)
 		l.Entries = l.Entries[:index]
 	}
 
