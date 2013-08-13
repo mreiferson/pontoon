@@ -24,6 +24,10 @@ type Logger interface {
 	Term() int64
 }
 
+type Applyer interface {
+	Apply(cr *CommandRequest) error
+}
+
 type Peer struct {
 	ID        string
 	NextIndex int64

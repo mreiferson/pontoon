@@ -28,6 +28,7 @@ type Node struct {
 	Uncommitted  map[int64]*CommandRequest
 	Log          Logger
 	Transport    Transporter
+	StateMachine Applyer
 
 	exitChan         chan int
 	voteResponseChan chan VoteResponse
@@ -45,11 +46,13 @@ type Node struct {
 	finishedElectionChan chan int
 }
 
-func NewNode(id string, transport Transporter) *Node {
+func NewNode(id string, transport Transporter, logger Logger, applyer Applyer) *Node {
 	node := &Node{
-		ID:        id,
-		Log:       &Log{},
-		Transport: transport,
+		ID: id,
+
+		Log:          logger,
+		Transport:    transport,
+		StateMachine: applyer,
 
 		Uncommitted: make(map[int64]*CommandRequest),
 
@@ -65,7 +68,7 @@ func NewNode(id string, transport Transporter) *Node {
 		commandChan:         make(chan CommandRequest),
 		commandResponseChan: make(chan CommandResponse),
 	}
-	go node.stateMachine()
+	go node.ioLoop()
 	return node
 }
 
@@ -84,8 +87,8 @@ func (n *Node) AddToCluster(member string) {
 	n.Cluster = append(n.Cluster, p)
 }
 
-func (n *Node) stateMachine() {
-	log.Printf("[%s] starting stateMachine()", n.ID)
+func (n *Node) ioLoop() {
+	log.Printf("[%s] starting ioLoop()", n.ID)
 
 	electionTimeout := 500 * time.Millisecond
 	randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))
@@ -269,8 +272,11 @@ func (n *Node) updateFollowers() {
 		}
 		cmdReq.ReplicationCount++
 		if cmdReq.ReplicationCount >= majority {
-			// TODO: commit & apply to state machine
-			log.Printf("... committing %+v", cmdReq)
+			log.Printf("... committed %+v", cmdReq)
+			err := n.StateMachine.Apply(cmdReq)
+			if err != nil {
+				// TODO: what do we do here?
+			}
 			cmdReq.ResponseChan <- CommandResponse{LeaderID: n.VotedFor, Success: true}
 		}
 		peer.NextIndex++
@@ -400,6 +406,7 @@ func (n *Node) doCommand(cr CommandRequest) {
 	}
 
 	// TODO: should check uncommitted before re-appending, etc.
+	cr.ReplicationCount++
 	n.Uncommitted[cr.ID] = &cr
 }
 

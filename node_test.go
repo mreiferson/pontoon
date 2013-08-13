@@ -19,7 +19,9 @@ func gimmeNodes(num int) []*Node {
 
 	for i := 0; i < num; i++ {
 		transport := &HTTPTransport{Address: "127.0.0.1:0"}
-		node := NewNode(fmt.Sprintf("%d", i), transport)
+		logger := &Log{}
+		applyer := &StateMachine{}
+		node := NewNode(fmt.Sprintf("%d", i), transport, logger, applyer)
 		nodes = append(nodes, node)
 		nodes[i].Start()
 	}
@@ -127,13 +129,15 @@ func TestCommand(t *testing.T) {
 
 	leader := findLeader(nodes)
 
-	responseChan := make(chan CommandResponse, 1)
-	cr := CommandRequest{
-		ID:           1,
-		Name:         "SUP",
-		Body:         []byte("BODY"),
-		ResponseChan: responseChan,
+	for i := int64(0); i < 10; i++ {
+		responseChan := make(chan CommandResponse, 1)
+		cr := CommandRequest{
+			ID:           i + 1,
+			Name:         "SUP",
+			Body:         []byte("BODY"),
+			ResponseChan: responseChan,
+		}
+		leader.Command(cr)
+		<-responseChan
 	}
-	leader.Command(cr)
-	<-responseChan
 }
