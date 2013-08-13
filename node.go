@@ -25,6 +25,7 @@ type Node struct {
 	VotedFor     string
 	Votes        int
 	Cluster      []*Peer
+	Uncommitted  map[int64]*CommandRequest
 	Log          Logger
 	Transport    Transporter
 
@@ -49,6 +50,8 @@ func NewNode(id string, transport Transporter) *Node {
 		ID:        id,
 		Log:       &Log{},
 		Transport: transport,
+
+		Uncommitted: make(map[int64]*CommandRequest),
 
 		exitChan:         make(chan int),
 		voteResponseChan: make(chan VoteResponse),
@@ -103,8 +106,7 @@ func (n *Node) stateMachine() {
 			eresp, _ := n.doAppendEntries(ereq)
 			n.appendEntriesResponseChan <- eresp
 		case creq := <-n.commandChan:
-			cresp, _ := n.doCommand(creq)
-			n.commandResponseChan <- cresp
+			n.doCommand(creq)
 		case <-electionTimer.C:
 			n.electionTimeout()
 		case vresp := <-n.voteResponseChan:
@@ -249,7 +251,12 @@ func (n *Node) updateFollowers() {
 		if n.Log.LastIndex() < peer.NextIndex {
 			continue
 		}
-		er := n.newEntryRequest(peer.NextIndex - 1, n.Log.Get(peer.NextIndex).Data)
+
+		entry := n.Log.Get(peer.NextIndex)
+		cmdReq := n.Uncommitted[entry.CmdID]
+		majority := int32((len(n.Cluster)+1)/2 + 1)
+
+		er := n.newEntryRequest(entry.CmdID, peer.NextIndex-1, entry.Data)
 		log.Printf("[%s] updating follower %s - %+v", n.ID, peer.ID, er)
 		_, err := n.Transport.AppendEntriesRPC(peer.ID, er)
 		if err != nil {
@@ -259,6 +266,12 @@ func (n *Node) updateFollowers() {
 				peer.NextIndex = 0
 			}
 			continue
+		}
+		cmdReq.ReplicationCount++
+		if cmdReq.ReplicationCount >= majority {
+			// TODO: commit & apply to state machine
+			log.Printf("... committing %+v", cmdReq)
+			cmdReq.ResponseChan <- CommandResponse{LeaderID: n.VotedFor, Success: true}
 		}
 		peer.NextIndex++
 	}
@@ -354,15 +367,16 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 		log.Printf("[%s] Check error - %s", n.ID, err)
 		return EntryResponse{Term: n.Term, Success: false}, nil
 	}
-	if bytes.Compare(er.Data, []byte("NOP")) != 0 {
-		err := n.Log.Append(er.PrevLogIndex+1, er.Term, er.Data)
-		if err != nil {
-			log.Printf("[%s] Append error - %s", n.ID, err)
-			return EntryResponse{Term: n.Term, Success: false}, nil
-		}
+
+	if bytes.Compare(er.Data, []byte("NOP")) == 0 {
+		return EntryResponse{Term: n.Term, Success: true}, nil
 	}
 
-	return EntryResponse{Term: n.Term, Success: true}, nil
+	err = n.Log.Append(er.CmdID, er.PrevLogIndex+1, er.Term, er.Data)
+	if err != nil {
+		log.Printf("[%s] Append error - %s", n.ID, err)
+	}
+	return EntryResponse{Term: n.Term, Success: err == nil}, nil
 }
 
 func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
@@ -370,33 +384,33 @@ func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
 	return <-n.appendEntriesResponseChan, nil
 }
 
-func (n *Node) doCommand(cr CommandRequest) (CommandResponse, error) {
+func (n *Node) doCommand(cr CommandRequest) {
 	n.RLock()
 	state := n.State
-	leaderID := n.ID
+	leaderID := n.VotedFor
 	n.RUnlock()
 
 	if state != Leader {
-		return CommandResponse{leaderID}, nil
+		cr.ResponseChan <- CommandResponse{LeaderID: leaderID, Success: false}
 	}
 
-	err := n.Log.Append(n.Log.Index(), n.Term, cr.Body)
+	err := n.Log.Append(cr.ID, n.Log.Index(), n.Term, cr.Body)
 	if err != nil {
-		return CommandResponse{leaderID}, nil
+		cr.ResponseChan <- CommandResponse{LeaderID: leaderID, Success: false}
 	}
 
-	return CommandResponse{leaderID}, nil
+	// TODO: should check uncommitted before re-appending, etc.
+	n.Uncommitted[cr.ID] = &cr
 }
 
-func (n *Node) Command(cr CommandRequest) (CommandResponse, error) {
+func (n *Node) Command(cr CommandRequest) {
 	n.commandChan <- cr
-	return <-n.commandResponseChan, nil
 }
 
 func (n *Node) sendHeartbeat() {
 	n.RLock()
 	state := n.State
-	er := n.newEntryRequest(n.Log.LastIndex(), []byte("NOP"))
+	er := n.newEntryRequest(-1, n.Log.LastIndex(), []byte("NOP"))
 	n.RUnlock()
 
 	if state != Leader {
@@ -416,7 +430,7 @@ func (n *Node) sendHeartbeat() {
 	}
 }
 
-func (n *Node) newEntryRequest(index int64, data []byte) EntryRequest {
+func (n *Node) newEntryRequest(cmdID int64, index int64, data []byte) EntryRequest {
 	entry := n.Log.Get(index)
 	prevLogIndex := int64(-1)
 	prevLogTerm := int64(-1)
@@ -425,6 +439,7 @@ func (n *Node) newEntryRequest(index int64, data []byte) EntryRequest {
 		prevLogTerm = entry.Term
 	}
 	return EntryRequest{
+		CmdID:        cmdID,
 		LeaderID:     n.ID,
 		Term:         n.Term,
 		PrevLogIndex: prevLogIndex,

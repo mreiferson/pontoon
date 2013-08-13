@@ -153,10 +153,10 @@ func (t *HTTPTransport) commandHandler(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// TODO: clients should embed a client id for each command
-	// that is de-duped in the leaders log
-	resp, err := t.node.Command(cr)
-	if err != nil {
+	cr.ResponseChan = make(chan CommandResponse, 1)
+	t.node.Command(cr)
+	resp := <-cr.ResponseChan
+	if !resp.Success {
 		apiResponse(w, 500, nil)
 	}
 

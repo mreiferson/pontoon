@@ -7,6 +7,7 @@ import (
 )
 
 type Entry struct {
+	CmdID int64
 	Index int64
 	Term  int64
 	Data  []byte
@@ -15,8 +16,8 @@ type Entry struct {
 type Log struct {
 	sync.RWMutex
 
-	index   int64
-	term    int64
+	index int64
+	term  int64
 
 	Entries []*Entry
 }
@@ -67,12 +68,13 @@ func (l *Log) Check(prevLogIndex int64, prevLogTerm int64, index int64, term int
 	return nil
 }
 
-func (l *Log) Append(index int64, term int64, data []byte) error {
+func (l *Log) Append(cmdID int64, index int64, term int64, data []byte) error {
 	if term != l.term {
 		l.term = term
 	}
 
 	e := &Entry{
+		CmdID: cmdID,
 		Index: index,
 		Term:  l.term,
 		Data:  data,

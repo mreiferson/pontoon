@@ -16,7 +16,7 @@ type Transporter interface {
 
 type Logger interface {
 	Check(prevLogIndex int64, prevLogTerm int64, index int64, term int64) error
-	Append(index int64, term int64, data []byte) error
+	Append(cmdID int64, index int64, term int64, data []byte) error
 	FresherThan(index int64, term int64) bool
 	Get(index int64) *Entry
 	Index() int64
@@ -30,14 +30,16 @@ type Peer struct {
 }
 
 type CommandRequest struct {
-	ID              int64
-	Name            string
-	Body            []byte
-	responseChannel chan bool
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	Body             []byte `json:"body"`
+	ResponseChan     chan CommandResponse
+	ReplicationCount int32
 }
 
 type CommandResponse struct {
 	LeaderID string
+	Success  bool
 }
 
 type VoteRequest struct {
@@ -53,12 +55,12 @@ type VoteResponse struct {
 }
 
 type EntryRequest struct {
-	Term           int64  `json:"term"`
-	LeaderID       string `json:"leader_id"`
-	PrevLogIndex   int64  `json:"prev_log_index"`
-	PrevLogTerm    int64  `json:"prev_log_term"`
-	Data           []byte `json:"data"`
-	commandRequest *CommandRequest
+	CmdID        int64  `json:"cmd_id"`
+	Term         int64  `json:"term"`
+	LeaderID     string `json:"leader_id"`
+	PrevLogIndex int64  `json:"prev_log_index"`
+	PrevLogTerm  int64  `json:"prev_log_term"`
+	Data         []byte `json:"data"`
 }
 
 type EntryResponse struct {

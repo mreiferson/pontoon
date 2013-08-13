@@ -127,13 +127,13 @@ func TestCommand(t *testing.T) {
 
 	leader := findLeader(nodes)
 
-	responseChannel := make(chan bool, 1)
+	responseChan := make(chan CommandResponse, 1)
 	cr := CommandRequest{
-		ID:              1,
-		Name:            "SUP",
-		Body:            []byte("BODY"),
-		responseChannel: responseChannel,
+		ID:           1,
+		Name:         "SUP",
+		Body:         []byte("BODY"),
+		ResponseChan: responseChan,
 	}
 	leader.Command(cr)
-	<-responseChannel
+	<-responseChan
 }
