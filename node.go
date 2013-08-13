@@ -69,7 +69,7 @@ func NewNode(id string, transport Transporter) *Node {
 		commandChan:         make(chan CommandRequest),
 		commandResponseChan: make(chan CommandResponse),
 	}
-	go node.StateMachine()
+	go node.stateMachine()
 	return node
 }
 
@@ -88,8 +88,8 @@ func (n *Node) AddToCluster(member string) {
 	n.Cluster = append(n.Cluster, p)
 }
 
-func (n *Node) StateMachine() {
-	log.Printf("[%s] starting StateMachine()", n.ID)
+func (n *Node) stateMachine() {
+	log.Printf("[%s] starting stateMachine()", n.ID)
 
 	electionTimeout := 500 * time.Millisecond
 	randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))

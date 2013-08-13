@@ -55,7 +55,7 @@ func (t *HTTPTransport) String() string {
 
 func (t *HTTPTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "POST" {
-		ApiResponse(w, 405, nil)
+		apiResponse(w, 405, nil)
 	}
 
 	switch req.URL.Path {
@@ -68,11 +68,11 @@ func (t *HTTPTransport) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case "/command":
 		t.commandHandler(w, req)
 	default:
-		ApiResponse(w, 404, nil)
+		apiResponse(w, 404, nil)
 	}
 }
 
-func ApiResponse(w http.ResponseWriter, statusCode int, data interface{}) {
+func apiResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 	response, err := json.Marshal(data)
 	if err != nil {
 		response = []byte("INTERNAL_ERROR")
@@ -94,23 +94,23 @@ func (t *HTTPTransport) requestVoteHandler(w http.ResponseWriter, req *http.Requ
 
 	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 		return
 	}
 
 	err = json.Unmarshal(data, &vr)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 		return
 	}
 
 	resp, err := t.node.RequestVote(vr)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 		return
 	}
 
-	ApiResponse(w, 200, resp)
+	apiResponse(w, 200, resp)
 }
 
 func (t *HTTPTransport) appendEntriesHandler(w http.ResponseWriter, req *http.Request) {
@@ -118,22 +118,22 @@ func (t *HTTPTransport) appendEntriesHandler(w http.ResponseWriter, req *http.Re
 
 	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 		return
 	}
 
 	err = json.Unmarshal(data, &er)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 		return
 	}
 
 	resp, err := t.node.AppendEntries(er)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 	}
 
-	ApiResponse(w, 200, resp)
+	apiResponse(w, 200, resp)
 }
 
 // TODO: split this out into peer transport and client transport
@@ -143,13 +143,13 @@ func (t *HTTPTransport) commandHandler(w http.ResponseWriter, req *http.Request)
 
 	data, err := ioutil.ReadAll(req.Body)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 		return
 	}
 
 	err = json.Unmarshal(data, &cr)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 		return
 	}
 
@@ -157,16 +157,16 @@ func (t *HTTPTransport) commandHandler(w http.ResponseWriter, req *http.Request)
 	// that is de-duped in the leaders log
 	resp, err := t.node.Command(cr)
 	if err != nil {
-		ApiResponse(w, 500, nil)
+		apiResponse(w, 500, nil)
 	}
 
-	ApiResponse(w, 200, resp)
+	apiResponse(w, 200, resp)
 }
 
 func (t *HTTPTransport) RequestVoteRPC(address string, voteRequest VoteRequest) (VoteResponse, error) {
 	endpoint := fmt.Sprintf("http://%s/request_vote", address)
 	log.Printf("[%s] RequestVoteRPC %+v to %s", t.node.ID, voteRequest, endpoint)
-	data, err := ApiRequest("POST", endpoint, voteRequest, 100*time.Millisecond)
+	data, err := apiRequest("POST", endpoint, voteRequest, 100*time.Millisecond)
 	if err != nil {
 		return VoteResponse{}, err
 	}
@@ -182,7 +182,7 @@ func (t *HTTPTransport) RequestVoteRPC(address string, voteRequest VoteRequest) 
 func (t *HTTPTransport) AppendEntriesRPC(address string, entryRequest EntryRequest) (EntryResponse, error) {
 	endpoint := fmt.Sprintf("http://%s/append_entries", address)
 	log.Printf("[%s] AppendEntriesRPC %+v to %s", t.node.ID, entryRequest, endpoint)
-	_, err := ApiRequest("POST", endpoint, entryRequest, 500*time.Millisecond)
+	_, err := apiRequest("POST", endpoint, entryRequest, 500*time.Millisecond)
 	if err != nil {
 		return EntryResponse{}, err
 	}

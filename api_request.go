@@ -28,7 +28,7 @@ func (c *deadlinedConn) Write(b []byte) (n int, err error) {
 }
 
 // A custom http.Transport with support for deadline timeouts
-func NewDeadlineTransport(timeout time.Duration) *http.Transport {
+func newDeadlineTransport(timeout time.Duration) *http.Transport {
 	transport := &http.Transport{
 		Dial: func(netw, addr string) (net.Conn, error) {
 			c, err := net.DialTimeout(netw, addr, timeout)
@@ -41,8 +41,8 @@ func NewDeadlineTransport(timeout time.Duration) *http.Transport {
 	return transport
 }
 
-func ApiRequest(method string, endpoint string, body interface{}, timeout time.Duration) (*simplejson.Json, error) {
-	httpclient := &http.Client{Transport: NewDeadlineTransport(timeout)}
+func apiRequest(method string, endpoint string, body interface{}, timeout time.Duration) (*simplejson.Json, error) {
+	httpclient := &http.Client{Transport: newDeadlineTransport(timeout)}
 
 	js, err := json.Marshal(body)
 	if err != nil {
