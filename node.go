@@ -107,9 +107,6 @@ func (n *Node) ioLoop() {
 
 	for {
 		select {
-		case <-n.exitChan:
-			n.stepDown()
-			goto exit
 		case vreq := <-n.requestVoteChan:
 			vresp, _ := n.doRequestVote(vreq)
 			n.requestVoteResponseChan <- vresp
@@ -118,18 +115,19 @@ func (n *Node) ioLoop() {
 			n.appendEntriesResponseChan <- eresp
 		case creq := <-n.commandChan:
 			n.doCommand(creq)
+			n.updateFollowers()
 		case <-electionTimer.C:
 			n.electionTimeout()
 		case vresp := <-n.voteResponseChan:
 			n.voteResponse(vresp)
 			continue
 		case <-followerTimer.C:
-			if n.State != Leader {
-				continue
-			}
 			// this also acts as a heartbeat
 			n.updateFollowers()
 			continue
+		case <-n.exitChan:
+			n.stepDown()
+			goto exit
 		}
 
 		randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))
@@ -144,9 +142,6 @@ exit:
 }
 
 func (n *Node) setTerm(term int64) {
-	n.Lock()
-	defer n.Unlock()
-
 	// check freshness
 	if term <= n.Term {
 		return
@@ -159,9 +154,6 @@ func (n *Node) setTerm(term int64) {
 }
 
 func (n *Node) nextTerm() {
-	n.Lock()
-	defer n.Unlock()
-
 	log.Printf("[%s] nextTerm()", n.ID)
 
 	n.Term++
@@ -171,9 +163,6 @@ func (n *Node) nextTerm() {
 }
 
 func (n *Node) stepDown() {
-	n.Lock()
-	defer n.Unlock()
-
 	if n.State == Follower {
 		return
 	}
@@ -186,9 +175,6 @@ func (n *Node) stepDown() {
 }
 
 func (n *Node) promoteToLeader() {
-	n.Lock()
-	defer n.Unlock()
-
 	log.Printf("[%s] promoteToLeader()", n.ID)
 
 	n.State = Leader
@@ -206,7 +192,6 @@ func (n *Node) electionTimeout() {
 
 	n.nextTerm()
 	n.runForLeader()
-	go n.gatherVotes()
 }
 
 func (n *Node) voteResponse(vresp VoteResponse) {
@@ -229,16 +214,13 @@ func (n *Node) voteResponse(vresp VoteResponse) {
 }
 
 func (n *Node) voteGranted() {
-	n.Lock()
 	n.Votes++
-	votes := n.Votes
-	n.Unlock()
 
 	majority := (len(n.Cluster)+1)/2 + 1
 
-	log.Printf("[%s] voteGranted() %d >= %d", n.ID, votes, majority)
+	log.Printf("[%s] voteGranted() %d >= %d", n.ID, n.Votes, majority)
 
-	if votes >= majority {
+	if n.Votes >= majority {
 		// we won election, end it and promote
 		n.endElection()
 		n.promoteToLeader()
@@ -261,6 +243,10 @@ func (n *Node) endElection() {
 
 func (n *Node) updateFollowers() {
 	var er EntryRequest
+
+	if n.State != Leader {
+		return
+	}
 
 	for _, peer := range n.Cluster {
 		if n.Log.LastIndex() < peer.NextIndex {
@@ -305,9 +291,6 @@ func (n *Node) updateFollowers() {
 }
 
 func (n *Node) runForLeader() {
-	n.Lock()
-	defer n.Unlock()
-
 	log.Printf("[%s] runForLeader()", n.ID)
 
 	n.State = Candidate
@@ -315,16 +298,18 @@ func (n *Node) runForLeader() {
 	n.ElectionTerm = n.Term
 	n.endElectionChan = make(chan int)
 	n.finishedElectionChan = make(chan int)
-}
 
-func (n *Node) gatherVotes() {
 	vreq := VoteRequest{
-		Term:         n.Term,
+		Term: n.Term,
+		// TODO: this should use Node.ID
 		CandidateID:  n.Transport.String(),
 		LastLogIndex: n.Log.Index(),
 		LastLogTerm:  n.Log.Term(),
 	}
+	go n.gatherVotes(vreq)
+}
 
+func (n *Node) gatherVotes(vreq VoteRequest) {
 	for _, peer := range n.Cluster {
 		go func(p string) {
 			vresp, err := n.Transport.RequestVoteRPC(p, vreq)
@@ -411,13 +396,8 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 }
 
 func (n *Node) doCommand(cr CommandRequest) {
-	n.RLock()
-	state := n.State
-	leaderID := n.VotedFor
-	n.RUnlock()
-
-	if state != Leader {
-		cr.ResponseChan <- CommandResponse{LeaderID: leaderID, Success: false}
+	if n.State != Leader {
+		cr.ResponseChan <- CommandResponse{LeaderID: n.VotedFor, Success: false}
 	}
 
 	e := &Entry{
@@ -431,7 +411,7 @@ func (n *Node) doCommand(cr CommandRequest) {
 
 	err := n.Log.Append(e)
 	if err != nil {
-		cr.ResponseChan <- CommandResponse{LeaderID: leaderID, Success: false}
+		cr.ResponseChan <- CommandResponse{LeaderID: n.VotedFor, Success: false}
 	}
 
 	// TODO: should check uncommitted before re-appending, etc.
