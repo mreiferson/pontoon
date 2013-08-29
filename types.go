@@ -1,5 +1,7 @@
 package pontoon
 
+// At any given time each server is in one of three states:
+// leader, follower, or candidate.
 const (
 	Follower = iota
 	Candidate
