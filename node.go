@@ -30,17 +30,13 @@ type Node struct {
 	Transport    Transporter
 	StateMachine Applyer
 
-	exitChan         chan int
-	voteResponseChan chan VoteResponse
-
-	requestVoteChan         chan VoteRequest
-	requestVoteResponseChan chan VoteResponse
-
+	exitChan                  chan int
+	voteResponseChan          chan VoteResponse
+	requestVoteChan           chan VoteRequest
+	requestVoteResponseChan   chan VoteResponse
 	appendEntriesChan         chan EntryRequest
 	appendEntriesResponseChan chan EntryResponse
-
-	commandChan         chan CommandRequest
-	commandResponseChan chan CommandResponse
+	commandChan               chan CommandRequest
 
 	endElectionChan      chan int
 	finishedElectionChan chan int
@@ -56,17 +52,13 @@ func NewNode(id string, transport Transporter, logger Logger, applyer Applyer) *
 
 		Uncommitted: make(map[int64]*CommandRequest),
 
-		exitChan:         make(chan int),
-		voteResponseChan: make(chan VoteResponse),
-
-		requestVoteChan:         make(chan VoteRequest),
-		requestVoteResponseChan: make(chan VoteResponse),
-
+		exitChan:                  make(chan int),
+		voteResponseChan:          make(chan VoteResponse),
+		requestVoteChan:           make(chan VoteRequest),
+		requestVoteResponseChan:   make(chan VoteResponse),
 		appendEntriesChan:         make(chan EntryRequest),
 		appendEntriesResponseChan: make(chan EntryResponse),
-
-		commandChan:         make(chan CommandRequest),
-		commandResponseChan: make(chan CommandResponse),
+		commandChan:               make(chan CommandRequest),
 	}
 	return node
 }
@@ -98,7 +90,7 @@ func (n *Node) ioLoop() {
 	electionTimer := time.NewTimer(randElectionTimeout)
 
 	followerTimer := time.NewTicker(10 * time.Millisecond)
-	heartbeatTimer := time.NewTicker(100 * time.Millisecond)
+	heartbeatTimer := time.NewTicker(250 * time.Millisecond)
 
 	for {
 		select {
@@ -117,11 +109,13 @@ func (n *Node) ioLoop() {
 			n.electionTimeout()
 		case vresp := <-n.voteResponseChan:
 			n.voteResponse(vresp)
+			continue
 		case <-followerTimer.C:
 			if n.State != Leader {
 				continue
 			}
 			n.updateFollowers()
+			continue
 		case <-heartbeatTimer.C:
 			n.sendHeartbeat()
 			continue

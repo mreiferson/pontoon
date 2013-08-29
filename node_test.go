@@ -12,6 +12,7 @@ import (
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
+	log.SetFlags(log.Ldate | log.Lmicroseconds)
 }
 
 func gimmeNodes(num int) []*Node {
@@ -36,7 +37,7 @@ func gimmeNodes(num int) []*Node {
 			}
 		}
 	}
-	
+
 	for _, node := range nodes {
 		node.Start()
 	}
@@ -116,8 +117,6 @@ func TestNodeKill(t *testing.T) {
 func TestCommand(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
 	log.SetOutput(os.Stdout)
-	
-	log.SetFlags(log.Ldate | log.Lmicroseconds)
 
 	nodes, leader := startCluster(5)
 	defer stopCluster(nodes)
@@ -132,4 +131,6 @@ func TestCommand(t *testing.T) {
 		leader.Command(cr)
 		<-responseChan
 	}
+
+	time.Sleep(10 * time.Second)
 }
