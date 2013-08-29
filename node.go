@@ -82,6 +82,20 @@ func (n *Node) AddToCluster(member string) {
 	n.Cluster = append(n.Cluster, p)
 }
 
+func (n *Node) RequestVote(vr VoteRequest) (VoteResponse, error) {
+	n.requestVoteChan <- vr
+	return <-n.requestVoteResponseChan, nil
+}
+
+func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
+	n.appendEntriesChan <- er
+	return <-n.appendEntriesResponseChan, nil
+}
+
+func (n *Node) Command(cr CommandRequest) {
+	n.commandChan <- cr
+}
+
 func (n *Node) ioLoop() {
 	log.Printf("[%s] starting ioLoop()", n.ID)
 
@@ -89,8 +103,7 @@ func (n *Node) ioLoop() {
 	randElectionTimeout := electionTimeout + time.Duration(rand.Int63n(int64(electionTimeout)))
 	electionTimer := time.NewTimer(randElectionTimeout)
 
-	followerTimer := time.NewTicker(10 * time.Millisecond)
-	heartbeatTimer := time.NewTicker(250 * time.Millisecond)
+	followerTimer := time.NewTicker(250 * time.Millisecond)
 
 	for {
 		select {
@@ -114,10 +127,8 @@ func (n *Node) ioLoop() {
 			if n.State != Leader {
 				continue
 			}
+			// this also acts as a heartbeat
 			n.updateFollowers()
-			continue
-		case <-heartbeatTimer.C:
-			n.sendHeartbeat()
 			continue
 		}
 
@@ -195,6 +206,7 @@ func (n *Node) electionTimeout() {
 
 	n.nextTerm()
 	n.runForLeader()
+	go n.gatherVotes()
 }
 
 func (n *Node) voteResponse(vresp VoteResponse) {
@@ -248,16 +260,18 @@ func (n *Node) endElection() {
 }
 
 func (n *Node) updateFollowers() {
+	var er EntryRequest
+
 	for _, peer := range n.Cluster {
 		if n.Log.LastIndex() < peer.NextIndex {
-			continue
+			// heartbeat
+			_, prevLogIndex, prevLogTerm := n.Log.GetEntryForRequest(n.Log.LastIndex())
+			er = newEntryRequest(-1, n.ID, n.Term, prevLogIndex, prevLogTerm, []byte("NOP"))
+		} else {
+			entry, prevLogIndex, prevLogTerm := n.Log.GetEntryForRequest(peer.NextIndex)
+			er = newEntryRequest(entry.CmdID, n.ID, n.Term, prevLogIndex, prevLogTerm, entry.Data)
 		}
 
-		entry := n.Log.Get(peer.NextIndex)
-		cr := n.Uncommitted[entry.CmdID]
-		majority := int32((len(n.Cluster)+1)/2 + 1)
-
-		er := n.newEntryRequest(entry.CmdID, peer.NextIndex-1, entry.Data)
 		log.Printf("[%s] updating follower %s - %+v", n.ID, peer.ID, er)
 		_, err := n.Transport.AppendEntriesRPC(peer.ID, er)
 		if err != nil {
@@ -268,10 +282,18 @@ func (n *Node) updateFollowers() {
 			}
 			continue
 		}
+
+		if er.CmdID == -1 {
+			// skip commit checks for heartbeats
+			continue
+		}
+
+		majority := int32((len(n.Cluster)+1)/2 + 1)
+		cr := n.Uncommitted[er.CmdID]
 		cr.ReplicationCount++
 		if cr.ReplicationCount >= majority && cr.State != Committed {
 			cr.State = Committed
-			log.Printf("... committed %+v", cr)
+			log.Printf("[%s] !!! apply %+v", n.ID, cr)
 			err := n.StateMachine.Apply(cr)
 			if err != nil {
 				// TODO: what do we do here?
@@ -293,8 +315,6 @@ func (n *Node) runForLeader() {
 	n.ElectionTerm = n.Term
 	n.endElectionChan = make(chan int)
 	n.finishedElectionChan = make(chan int)
-
-	go n.gatherVotes()
 }
 
 func (n *Node) gatherVotes() {
@@ -348,11 +368,6 @@ func (n *Node) doRequestVote(vr VoteRequest) (VoteResponse, error) {
 	return VoteResponse{n.Term, true}, nil
 }
 
-func (n *Node) RequestVote(vr VoteRequest) (VoteResponse, error) {
-	n.requestVoteChan <- vr
-	return <-n.requestVoteResponseChan, nil
-}
-
 func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 	if er.Term < n.Term {
 		return EntryResponse{Term: n.Term, Success: false}, nil
@@ -378,16 +393,21 @@ func (n *Node) doAppendEntries(er EntryRequest) (EntryResponse, error) {
 		return EntryResponse{Term: n.Term, Success: true}, nil
 	}
 
-	err = n.Log.Append(er.CmdID, er.PrevLogIndex+1, er.Term, er.Data)
+	e := &Entry{
+		CmdID: er.CmdID,
+		Index: er.PrevLogIndex + 1,
+		Term:  er.Term,
+		Data:  er.Data,
+	}
+
+	log.Printf("[%s] ... appending %+v", n.ID, e)
+
+	err = n.Log.Append(e)
 	if err != nil {
 		log.Printf("[%s] Append error - %s", n.ID, err)
 	}
-	return EntryResponse{Term: n.Term, Success: err == nil}, nil
-}
 
-func (n *Node) AppendEntries(er EntryRequest) (EntryResponse, error) {
-	n.appendEntriesChan <- er
-	return <-n.appendEntriesResponseChan, nil
+	return EntryResponse{Term: n.Term, Success: err == nil}, nil
 }
 
 func (n *Node) doCommand(cr CommandRequest) {
@@ -400,7 +420,16 @@ func (n *Node) doCommand(cr CommandRequest) {
 		cr.ResponseChan <- CommandResponse{LeaderID: leaderID, Success: false}
 	}
 
-	err := n.Log.Append(cr.ID, n.Log.Index(), n.Term, cr.Body)
+	e := &Entry{
+		CmdID: cr.ID,
+		Index: n.Log.Index(),
+		Term:  n.Term,
+		Data:  cr.Body,
+	}
+
+	log.Printf("[%s] ... appending %+v", n.ID, e)
+
+	err := n.Log.Append(e)
 	if err != nil {
 		cr.ResponseChan <- CommandResponse{LeaderID: leaderID, Success: false}
 	}
@@ -409,49 +438,4 @@ func (n *Node) doCommand(cr CommandRequest) {
 	cr.State = Logged
 	cr.ReplicationCount++
 	n.Uncommitted[cr.ID] = &cr
-}
-
-func (n *Node) Command(cr CommandRequest) {
-	n.commandChan <- cr
-}
-
-func (n *Node) sendHeartbeat() {
-	n.RLock()
-	state := n.State
-	er := n.newEntryRequest(-1, n.Log.LastIndex(), []byte("NOP"))
-	n.RUnlock()
-
-	if state != Leader {
-		return
-	}
-
-	log.Printf("[%s] sendHeartbeat()", n.ID)
-
-	for _, peer := range n.Cluster {
-		go func(p string) {
-			_, err := n.Transport.AppendEntriesRPC(p, er)
-			if err != nil {
-				log.Printf("[%s] error in AppendEntriesRPC() to %s - %s", n.ID, p, err)
-				return
-			}
-		}(peer.ID)
-	}
-}
-
-func (n *Node) newEntryRequest(cmdID int64, index int64, data []byte) EntryRequest {
-	entry := n.Log.Get(index)
-	prevLogIndex := int64(-1)
-	prevLogTerm := int64(-1)
-	if entry != nil {
-		prevLogIndex = entry.Index
-		prevLogTerm = entry.Term
-	}
-	return EntryRequest{
-		CmdID:        cmdID,
-		LeaderID:     n.ID,
-		Term:         n.Term,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		Data:         data,
-	}
 }

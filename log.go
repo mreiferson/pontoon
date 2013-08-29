@@ -41,6 +41,16 @@ func (l *Log) Get(index int64) *Entry {
 	return l.Entries[index]
 }
 
+func (l *Log) GetEntryForRequest(index int64) (*Entry, int64, int64) {
+	if index < 0 {
+		return nil, -1, -1
+	}
+	if index < 1 {
+		return l.Entries[index], -1, -1
+	}
+	return l.Entries[index], l.Entries[index-1].Index, l.Entries[index-1].Term
+}
+
 func (l *Log) FresherThan(index int64, term int64) bool {
 	if l.term > term {
 		return true
@@ -68,27 +78,17 @@ func (l *Log) Check(prevLogIndex int64, prevLogTerm int64, index int64, term int
 	return nil
 }
 
-func (l *Log) Append(cmdID int64, index int64, term int64, data []byte) error {
-	if term != l.term {
-		l.term = term
+func (l *Log) Append(e *Entry) error {
+	if e.Term != l.term {
+		l.term = e.Term
 	}
 
-	e := &Entry{
-		CmdID: cmdID,
-		Index: index,
-		Term:  l.term,
-		Data:  data,
-	}
-
-	log.Printf("... appending %+v", e)
-
-	if index < l.index {
-		log.Printf("... truncating to %d", index-1)
-		l.Entries = l.Entries[:index]
+	if e.Index < l.index {
+		log.Printf("... truncating to %d", e.Index-1)
+		l.Entries = l.Entries[:e.Index]
 	}
 
 	l.Entries = append(l.Entries, e)
-
-	l.index = index + 1
+	l.index = e.Index + 1
 	return nil
 }

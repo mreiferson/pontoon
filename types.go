@@ -22,9 +22,10 @@ type Transporter interface {
 
 type Logger interface {
 	Check(prevLogIndex int64, prevLogTerm int64, index int64, term int64) error
-	Append(cmdID int64, index int64, term int64, data []byte) error
+	Append(e *Entry) error
 	FresherThan(index int64, term int64) bool
 	Get(index int64) *Entry
+	GetEntryForRequest(index int64) (*Entry, int64, int64)
 	Index() int64
 	LastIndex() int64
 	Term() int64
@@ -63,18 +64,4 @@ type VoteRequest struct {
 type VoteResponse struct {
 	Term        int64 `json:"term"`
 	VoteGranted bool  `json:"vote_granted"`
-}
-
-type EntryRequest struct {
-	CmdID        int64  `json:"cmd_id"`
-	Term         int64  `json:"term"`
-	LeaderID     string `json:"leader_id"`
-	PrevLogIndex int64  `json:"prev_log_index"`
-	PrevLogTerm  int64  `json:"prev_log_term"`
-	Data         []byte `json:"data"`
-}
-
-type EntryResponse struct {
-	Term    int64 `json:"term"`
-	Success bool  `json:"success"`
 }
